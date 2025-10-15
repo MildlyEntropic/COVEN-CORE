@@ -1,0 +1,27 @@
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+skip-string-normalization = true
+
+[tool.isort]
+profile = "black"
+line_length = 100
+sections = ["FUTURE", "STDLIB", "THIRDPARTY", "FIRSTPARTY", "LOCALFOLDER"]
+known_third_party = ["rclpy", "std_msgs"]
+known_first_party = ["coven_core", "launch"]
+force_single_line = true
+order_by_type = true
+combine_as_imports = false
+lines_after_imports = 2
+
+[tool.pylint.'MESSAGES CONTROL']
+disable = [
+    "R0902",  # too-many-instance-attributes
+    "R0913",  # too-many-arguments
+    "R0917",  # too-many-positional-arguments
+    "R0801",  # duplicate-code
+    "R0402",  # consider-using-from-import
+]
+
+[tool.pylint.format]
+max-line-length = 100

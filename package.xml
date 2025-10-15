@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>coven_core</name>
+  <version>0.0.1</version>
+  <description>COVEN Phase 1: dock &amp; module ROS2 (Python)</description>
+
+  <maintainer email="shultis@hawaii.edu">Ander Shultis</maintainer>
+  <license>MIT</license>
+
+  <!-- Build tools -->
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <!-- Runtime dependencies -->
+  <depend>rclpy</depend>
+  <depend>std_msgs</depend>
+
+  <!-- Testing -->
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
