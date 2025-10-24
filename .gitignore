@@ -205,3 +205,21 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Ignore build artifacts
+build/
+install/
+log/
+
+# Ignore Python bytecode
+*.pyc
+__pycache__/
+
+# Ignore simulation and vendor repos
+create3_sim/
+irobot_create_*/
+turtlebot4*/
+turtlebot4_*/
+
+# Ignore ROS colcon metadata
+.colcon/
