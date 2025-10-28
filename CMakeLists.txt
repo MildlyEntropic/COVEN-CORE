@@ -13,4 +13,11 @@ install(DIRECTORY launch
   DESTINATION share/${PROJECT_NAME}/
 )
 
+# --- Install model files so Gazebo can find them ---
+install(
+  DIRECTORY models/
+  DESTINATION share/${PROJECT_NAME}/models
+)
+
+
 ament_package()
