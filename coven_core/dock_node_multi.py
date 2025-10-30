@@ -20,9 +20,13 @@ Date: September 2025
 # --- Imports ---
 # ------------------------
 # --- Standard library ---
+import base64
+import gzip
 import json
+import os
 import time
 import threading
+from datetime import datetime
 
 # --- Third-party (ROS2) ---
 import rclpy
@@ -56,6 +60,11 @@ class DockMulti(Node):
         self.modules = {}  # module_id → {state, last_hb, miss_count, paused}
         self.live_hb = set()
         self._mod_lock = threading.Lock()
+
+        # Map storage directory
+        home_dir = os.path.expanduser("~")
+        self.map_storage_dir = os.path.join(home_dir, "coven_maps")
+        os.makedirs(self.map_storage_dir, exist_ok=True)
 
         # ROS Topics
         self.pub_ident_req = self.create_publisher(String, 'coven/identify_req', 10)
@@ -219,7 +228,84 @@ class DockMulti(Node):
                 mod["last_hb"] = time.time()
                 mod["miss_count"] = 0
         result = "SUCCESS" if tc.success else "FAIL"
-        self.get_logger().info(f"{COLOR_GREEN}TaskComplete from {tc.module_id}: {tc.task} → {result}{COLOR_RESET}")
+
+        # Log metrics
+        metrics_str = ""
+        if tc.exploration_metrics:
+            metrics_str = (
+                f" | Coverage: {tc.exploration_metrics.get('coverage', 0):.1%}, "
+                f"Duration: {tc.exploration_metrics.get('duration', 0):.1f}s, "
+                f"Iterations: {tc.exploration_metrics.get('iterations', 0)}"
+            )
+
+        self.get_logger().info(
+            f"{COLOR_GREEN}TaskComplete from {tc.module_id}: {tc.task} → {result}{metrics_str}{COLOR_RESET}"
+        )
+
+        # Save map data if present
+        if tc.map_data or tc.map_yaml:
+            self._save_map_data(tc)
+
+    def _save_map_data(self, tc: common.TaskComplete):
+        """
+        Deserialize and save map data received from module.
+
+        Args:
+            tc: TaskComplete message containing map data
+        """
+        try:
+            # Create timestamped directory for this mission
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            mission_dir = os.path.join(
+                self.map_storage_dir,
+                tc.module_id,
+                f"{tc.task}_{timestamp}"
+            )
+            os.makedirs(mission_dir, exist_ok=True)
+
+            # Decode and decompress map data
+            if tc.map_data:
+                pgm_compressed = base64.b64decode(tc.map_data)
+                pgm_data = gzip.decompress(pgm_compressed)
+
+                pgm_file = os.path.join(mission_dir, "exploration_map.pgm")
+                with open(pgm_file, 'wb') as f:
+                    f.write(pgm_data)
+
+                self.get_logger().info(f"Saved map PGM: {pgm_file} ({len(pgm_data)} bytes)")
+
+            # Decode and decompress YAML metadata
+            if tc.map_yaml:
+                yaml_compressed = base64.b64decode(tc.map_yaml)
+                yaml_data = gzip.decompress(yaml_compressed)
+
+                yaml_file = os.path.join(mission_dir, "exploration_map.yaml")
+                with open(yaml_file, 'wb') as f:
+                    f.write(yaml_data)
+
+                self.get_logger().info(f"Saved map YAML: {yaml_file} ({len(yaml_data)} bytes)")
+
+            # Save exploration metrics as JSON
+            if tc.exploration_metrics:
+                metrics_file = os.path.join(mission_dir, "metrics.json")
+                with open(metrics_file, 'w') as f:
+                    json.dump({
+                        "module_id": tc.module_id,
+                        "task": tc.task,
+                        "timestamp": timestamp,
+                        "success": tc.success,
+                        "note": tc.note,
+                        "metrics": tc.exploration_metrics
+                    }, f, indent=2)
+
+                self.get_logger().info(f"Saved metrics: {metrics_file}")
+
+            self.get_logger().info(
+                f"{COLOR_GREEN}Map data from {tc.module_id} saved to {mission_dir}{COLOR_RESET}"
+            )
+
+        except Exception as e:
+            self.get_logger().error(f"Failed to save map data: {e}")
 
 
 # ------------------------

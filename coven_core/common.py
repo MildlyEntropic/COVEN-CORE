@@ -146,6 +146,13 @@ class TaskComplete:
     task: str
     success: bool = True
     note: str = ""
+    map_data: str = ""  # Base64-encoded gzipped map file (PGM)
+    map_yaml: str = ""  # Base64-encoded map metadata (YAML)
+    exploration_metrics: dict = None  # Area, duration, distance, etc.
+
+    def __post_init__(self):
+        if self.exploration_metrics is None:
+            self.exploration_metrics = {}
 
 
 # ------------------------
@@ -287,7 +294,10 @@ def task_complete_encode(tc: TaskComplete) -> str:
         "module_id": tc.module_id,
         "task": tc.task,
         "success": tc.success,
-        "note": tc.note
+        "note": tc.note,
+        "map_data": tc.map_data,
+        "map_yaml": tc.map_yaml,
+        "exploration_metrics": tc.exploration_metrics
     })
 
 def task_complete_decode(msg: String):
@@ -297,7 +307,10 @@ def task_complete_decode(msg: String):
             module_id=d.get("module_id", ""),
             task=d.get("task", ""),
             success=bool(d.get("success", True)),
-            note=d.get("note", "")
+            note=d.get("note", ""),
+            map_data=d.get("map_data", ""),
+            map_yaml=d.get("map_yaml", ""),
+            exploration_metrics=d.get("exploration_metrics", {})
         )
     except json.JSONDecodeError:
         return None

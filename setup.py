@@ -18,6 +18,8 @@ Date: September 2025
 # --- Imports ---
 # ------------------------
 from setuptools import setup, find_packages
+import os
+from glob import glob
 
 
 # ------------------------
@@ -32,8 +34,10 @@ setup(
     data_files=[
         ('share/ament_index/resource_index/packages', [f'resource/{package_name}']),
         ('share/' + package_name, ['package.xml']),
+        (os.path.join('share', package_name, 'launch'), glob('launch/*.launch.py')),
+        (os.path.join('share', package_name, 'models'), glob('models/*.sdf')),
     ],
-    install_requires=['setuptools'],
+    install_requires=['setuptools', 'numpy', 'scipy'],
     zip_safe=True,
     maintainer='Alexander Shultis',
     maintainer_email='shultisa@hawaii.edu',

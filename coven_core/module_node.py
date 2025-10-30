@@ -22,7 +22,11 @@ Date: September 2025
 # --- Imports ---
 # ------------------------
 # --- Standard library ---
+import base64
+import gzip
 import json
+import os
+import subprocess
 import threading
 import time
 import uuid
@@ -31,10 +35,15 @@ import uuid
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
+from geometry_msgs.msg import PoseStamped
+
+# --- Navigation ---
+from nav2_simple_commander.robot_navigator import BasicNavigator
 
 # --- Local (COVEN) ---
 import coven_core.common as common
 from coven_core.common import ModuleState
+from coven_core.exploration import Explorer
 
 
 # ------------------------
@@ -59,6 +68,11 @@ class Module(Node):
         self.state = ModuleState.BOOT
         self.seq = 0
         self.hb_timer = None
+
+        # Navigation components (initialized on demand)
+        self.navigator = None
+        self.explorer = None
+        self.dock_pose = None  # Store initial pose for return
 
         # ROS Topics
         self.sub_ident_req = self.create_subscription(String, 'coven/identify_req', self.on_ident_req, 10)
@@ -157,6 +171,7 @@ class Module(Node):
         threading.Thread(target=self.execute_task, args=(req.task,), daemon=True).start()
 
     def execute_task(self, task_name):
+        """Execute the assigned task (exploration mission)."""
         # Stop heartbeat and emit task start
         self.stop_heartbeat()
         self.state = ModuleState.FIELD_OPS
@@ -164,14 +179,147 @@ class Module(Node):
         self.pub_task_start.publish(String(data=common.task_start_encode(ts)))
         self.get_logger().info(f"Executing FIELD_OPS for task: {task_name}")
 
-        time.sleep(TASK_DELAY)
+        success = False
+        map_data_b64 = ""
+        map_yaml_b64 = ""
+        metrics = {}
+
+        try:
+            if "explore" in task_name.lower():
+                # Initialize navigation if not already done
+                if not self.navigator:
+                    self._initialize_navigation()
+
+                # Store dock position for return
+                self.dock_pose = self._get_current_pose()
+
+                # Execute exploration
+                success, metrics = self.explorer.explore(duration=TASK_DELAY)
+
+                # Return to dock
+                if success and self.dock_pose:
+                    return_success = self.explorer.return_to_dock(self.dock_pose)
+                    if not return_success:
+                        self.get_logger().warn("Failed to return to dock, using best effort")
+
+                # Save and serialize map
+                map_data_b64, map_yaml_b64 = self._save_and_serialize_map()
+
+            else:
+                # Fallback to simple delay for other task types
+                self.get_logger().info(f"Unknown task type '{task_name}', using delay simulation")
+                time.sleep(TASK_DELAY)
+                success = True
+
+        except Exception as e:
+            self.get_logger().error(f"Task execution failed: {e}")
+            success = False
 
         # Return and emit task complete
         self.state = ModuleState.NORMAL
         self.start_heartbeat()
-        tc = common.TaskComplete(module_id=self.module_id, task=task_name, success=True, note="Returned from task")
+
+        tc = common.TaskComplete(
+            module_id=self.module_id,
+            task=task_name,
+            success=success,
+            note=f"Exploration complete: {metrics.get('coverage', 0):.1%} coverage" if success else "Task failed",
+            map_data=map_data_b64,
+            map_yaml=map_yaml_b64,
+            exploration_metrics=metrics
+        )
         self.pub_task_complete.publish(String(data=common.task_complete_encode(tc)))
         self.get_logger().info(f"Task {task_name} complete — rejoined dock")
+
+    def _initialize_navigation(self):
+        """Initialize Nav2 navigator and explorer."""
+        self.get_logger().info("Initializing navigation components...")
+
+        # Create BasicNavigator
+        self.navigator = BasicNavigator()
+
+        # Wait for Nav2 to be ready
+        self.navigator.waitUntilNav2Active()
+
+        # Create Explorer
+        self.explorer = Explorer(self, self.navigator)
+
+        self.get_logger().info("Navigation components ready")
+
+    def _get_current_pose(self) -> PoseStamped:
+        """Get the current robot pose."""
+        pose = PoseStamped()
+        pose.header.frame_id = 'map'
+        pose.header.stamp = self.get_clock().now().to_msg()
+
+        # In simulation, assume starting at origin
+        # In production, use TF2 to get actual pose from /odom or /base_link
+        pose.pose.position.x = 0.0
+        pose.pose.position.y = 0.0
+        pose.pose.position.z = 0.0
+        pose.pose.orientation.w = 1.0
+
+        return pose
+
+    def _save_and_serialize_map(self) -> tuple:
+        """
+        Save the current SLAM map and serialize it for transmission.
+
+        Returns:
+            Tuple of (map_data_b64, map_yaml_b64) - Base64 encoded strings
+        """
+        try:
+            # Create temporary directory for map files
+            map_dir = f"/tmp/coven_maps/{self.module_id}"
+            os.makedirs(map_dir, exist_ok=True)
+
+            map_file = f"{map_dir}/exploration_map"
+
+            # Call map_saver_cli to save the map
+            self.get_logger().info(f"Saving map to {map_file}...")
+
+            result = subprocess.run(
+                ["ros2", "run", "nav2_map_server", "map_saver_cli",
+                 "-f", map_file, "--ros-args", "-p", "save_map_timeout:=5000"],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+
+            if result.returncode != 0:
+                self.get_logger().warn(f"Map saver failed: {result.stderr}")
+                return "", ""
+
+            # Read and encode the PGM file
+            pgm_file = f"{map_file}.pgm"
+            yaml_file = f"{map_file}.yaml"
+
+            if not os.path.exists(pgm_file) or not os.path.exists(yaml_file):
+                self.get_logger().warn("Map files not found after saving")
+                return "", ""
+
+            # Read and compress PGM
+            with open(pgm_file, 'rb') as f:
+                pgm_data = f.read()
+                pgm_compressed = gzip.compress(pgm_data)
+                pgm_b64 = base64.b64encode(pgm_compressed).decode('ascii')
+
+            # Read and compress YAML
+            with open(yaml_file, 'rb') as f:
+                yaml_data = f.read()
+                yaml_compressed = gzip.compress(yaml_data)
+                yaml_b64 = base64.b64encode(yaml_compressed).decode('ascii')
+
+            self.get_logger().info(
+                f"Map serialized: PGM={len(pgm_b64)} bytes (b64), "
+                f"YAML={len(yaml_b64)} bytes (b64)"
+            )
+
+            return pgm_b64, yaml_b64
+
+        except Exception as e:
+            self.get_logger().error(f"Failed to save/serialize map: {e}")
+            return "", ""
 
 # ------------------------
 # --- Main ---
