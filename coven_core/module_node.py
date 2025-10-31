@@ -188,7 +188,28 @@ class Module(Node):
             if "explore" in task_name.lower():
                 # Initialize navigation if not already done
                 if not self.navigator:
-                    self._initialize_navigation()
+                    try:
+                        self._initialize_navigation()
+                    except RuntimeError as e:
+                        self.get_logger().error(f"Navigation initialization failed: {e}")
+                        self.get_logger().warn("Cannot execute exploration task without Nav2. Returning to dock.")
+                        success = False
+                        # Early return to dock without exploration
+                        self.state = ModuleState.NORMAL
+                        self.start_heartbeat()
+
+                        tc = common.TaskComplete(
+                            module_id=self.module_id,
+                            task=task_name,
+                            success=False,
+                            note="Nav2 not available - run in full mode (-#f) for exploration",
+                            map_data="",
+                            map_yaml="",
+                            exploration_metrics={}
+                        )
+                        self.pub_task_complete.publish(String(data=common.task_complete_encode(tc)))
+                        self.get_logger().info(f"Task {task_name} failed — returning to NORMAL state")
+                        return
 
                 # Store dock position for return
                 self.dock_pose = self._get_current_pose()
@@ -238,7 +259,30 @@ class Module(Node):
         # Create BasicNavigator
         self.navigator = BasicNavigator()
 
-        # Wait for Nav2 to be ready
+        # Wait for Nav2 to be ready with timeout
+        self.get_logger().info("Waiting for Nav2 to activate (timeout: 10s)...")
+        start_time = time.time()
+        nav2_ready = False
+
+        while time.time() - start_time < 10.0:
+            try:
+                # Check if Nav2 services are available
+                service_list = self.navigator.get_service_names_and_types()
+                nav2_services = [s for s in service_list if 'nav2' in s[0] or 'navigate_to_pose' in s[0]]
+
+                if nav2_services:
+                    nav2_ready = True
+                    break
+
+            except Exception as e:
+                self.get_logger().debug(f"Nav2 check failed: {e}")
+
+            time.sleep(0.5)
+
+        if not nav2_ready:
+            raise RuntimeError("Nav2 not available - are you running in sim mode without navigation (-#s)? Try full mode (-#f) for exploration tasks.")
+
+        # Wait for Nav2 to fully activate
         self.navigator.waitUntilNav2Active()
 
         # Create Explorer
@@ -327,6 +371,13 @@ class Module(Node):
 def main():
     rclpy.init()
     node = Module()
-    rclpy.spin(node)
-    node.destroy_node()
-    rclpy.shutdown()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass  # Graceful shutdown on Ctrl+C
+    except Exception as e:
+        node.get_logger().error(f"Unexpected error: {e}")
+    finally:
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()

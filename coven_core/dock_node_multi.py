@@ -104,7 +104,7 @@ class DockMulti(Node):
         with self._mod_lock:
             self.modules[rep.module_id] = {
                 "state": common.DockState.VERIFY,
-                "last_hb": time.time(),
+                "last_hb": self.get_clock().now().nanoseconds / 1e9,
                 "miss_count": 0,
                 "paused": False
             }
@@ -142,14 +142,14 @@ class DockMulti(Node):
             if not mod:
                 return
             was_missing = mod["miss_count"] > 0
-            mod["last_hb"] = time.time()
+            mod["last_hb"] = self.get_clock().now().nanoseconds / 1e9
             mod["miss_count"] = 0
             self.live_hb.add(hb.module_id)
         if was_missing:
             self.get_logger().info(f"{COLOR_GREEN}Heartbeat recovered for {hb.module_id}{COLOR_RESET}")
 
     def flush_heartbeat_log(self):
-        now = time.time()
+        now = self.get_clock().now().nanoseconds / 1e9
         with self._mod_lock:
             live_snapshot = sorted(self.live_hb)
             self.live_hb.clear()
@@ -225,7 +225,7 @@ class DockMulti(Node):
             if mod:
                 mod["paused"] = False
                 mod["state"] = common.DockState.ENABLED
-                mod["last_hb"] = time.time()
+                mod["last_hb"] = self.get_clock().now().nanoseconds / 1e9
                 mod["miss_count"] = 0
         result = "SUCCESS" if tc.success else "FAIL"
 
@@ -314,6 +314,13 @@ class DockMulti(Node):
 def main():
     rclpy.init()
     node = DockMulti()
-    rclpy.spin(node)
-    node.destroy_node()
-    rclpy.shutdown()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass  # Graceful shutdown on Ctrl+C
+    except Exception as e:
+        node.get_logger().error(f"Unexpected error: {e}")
+    finally:
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
