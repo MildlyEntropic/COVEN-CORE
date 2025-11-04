@@ -265,9 +265,18 @@ class Explorer:
             # Send navigation goal
             self.navigator.goToPose(closest_goal)
 
-            # Wait for navigation to complete
+            # Small delay to let action client initialize
+            time.sleep(0.5)
+
+            # Wait for navigation to complete by polling with timeout
+            timeout_duration = 30.0  # 30 seconds per goal
+            start = time.time()
             while not self.navigator.isTaskComplete():
-                rclpy.spin_once(self.node, timeout_sec=0.1)
+                if time.time() - start > timeout_duration:
+                    self.node.get_logger().warn("Navigation goal timeout")
+                    self.navigator.cancelTask()
+                    break
+                time.sleep(0.2)
 
             result = self.navigator.getResult()
 
@@ -284,11 +293,11 @@ class Explorer:
         # Compile metrics
         final_coverage = self._calculate_coverage()
         metrics = {
-            "duration": time.time() - self.start_time,
-            "iterations": iteration,
-            "coverage": final_coverage,
-            "explored_cells": self.explored_cells,
-            "distance_traveled": total_distance
+            "duration": float(time.time() - self.start_time),
+            "iterations": int(iteration),
+            "coverage": float(final_coverage),
+            "explored_cells": int(self.explored_cells),  # Convert numpy int64 to Python int
+            "distance_traveled": float(total_distance)
         }
 
         self.node.get_logger().info(
@@ -317,7 +326,7 @@ class Explorer:
         self.navigator.goToPose(dock_pose)
 
         while not self.navigator.isTaskComplete():
-            rclpy.spin_once(self.node, timeout_sec=0.1)
+            time.sleep(0.1)
 
         result = self.navigator.getResult()
 

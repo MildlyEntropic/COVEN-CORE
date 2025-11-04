@@ -34,6 +34,7 @@ import uuid
 # --- Third-party (ROS2) ---
 import rclpy
 from rclpy.node import Node
+from rclpy.executors import MultiThreadedExecutor
 from std_msgs.msg import String
 from geometry_msgs.msg import PoseStamped
 
@@ -50,7 +51,7 @@ from coven_core.exploration import Explorer
 # --- Constants ---
 # ------------------------
 HB_PERIOD = 0.8  # seconds between heartbeats
-TASK_DELAY = 5.0  # simulate time away in field ops
+TASK_DELAY = 120.0  # exploration duration in seconds (2 minutes for meaningful mapping)
 
 
 # ------------------------
@@ -59,7 +60,7 @@ TASK_DELAY = 5.0  # simulate time away in field ops
 class Module(Node):
     """Module node that manages the FSM lifecycle for a single module."""
 
-    def __init__(self, module_id=None, module_type="ReconRover", fw="0.0.1"):
+    def __init__(self, module_id=None, module_type="ReconRover", fw="0.0.1", executor=None, robot_namespace=""):
         super().__init__('coven_module')
 
         self.module_id = module_id or f"RR-{str(uuid.uuid4())[:6]}"
@@ -68,11 +69,22 @@ class Module(Node):
         self.state = ModuleState.BOOT
         self.seq = 0
         self.hb_timer = None
+        self.executor = executor  # Store executor reference to add navigator node
+        self.robot_namespace = robot_namespace  # Namespace for robot-specific topics
 
         # Navigation components (initialized on demand)
         self.navigator = None
         self.explorer = None
         self.dock_pose = None  # Store initial pose for return
+
+        # Health monitoring
+        self.health_status = {
+            'lidar': True,
+            'camera': True,
+            'nav2': False,  # Not initialized until needed
+            'slam': False   # Not initialized until needed
+        }
+        self.last_sensor_check = self.get_clock().now()
 
         # ROS Topics
         self.sub_ident_req = self.create_subscription(String, 'coven/identify_req', self.on_ident_req, 10)
@@ -117,9 +129,48 @@ class Module(Node):
         req = common.verify_req_decode(msg)
         if not req or req.module_id != self.module_id:
             return
-        self.get_logger().info("VERIFY_REQ matched → replying OK")
-        rep = common.VerifyRep(module_id=self.module_id, ok=True, reason="")
+
+        # Perform health check before verification
+        health_ok, health_reason = self.check_health()
+
+        if health_ok:
+            self.get_logger().info("VERIFY_REQ matched → replying OK (health check passed)")
+            rep = common.VerifyRep(module_id=self.module_id, ok=True, reason="")
+        else:
+            self.get_logger().warn(f"VERIFY_REQ matched → replying FAIL: {health_reason}")
+            rep = common.VerifyRep(module_id=self.module_id, ok=False, reason=health_reason)
+
         self.pub_verify_rep.publish(String(data=common.verify_rep_encode(rep)))
+
+    # ------------------------
+    # HEALTH MONITORING
+    # ------------------------
+    def check_health(self) -> tuple[bool, str]:
+        """
+        Check the health of critical subsystems.
+
+        Returns:
+            Tuple of (health_ok: bool, reason: str)
+            - health_ok: True if all critical systems functional
+            - reason: Empty string if OK, otherwise describes failure
+        """
+        # Check for lidar data (scan topic)
+        scan_topic = f'{self.robot_namespace}/scan' if self.robot_namespace else '/scan'
+        try:
+            # Simple check: does topic exist?
+            topic_list = self.get_topic_names_and_types()
+            lidar_present = any(scan_topic in topic[0] for topic in topic_list)
+            self.health_status['lidar'] = lidar_present
+
+            if not lidar_present:
+                return False, f"Lidar offline - {scan_topic} topic not found"
+
+        except Exception as e:
+            self.get_logger().warn(f"Health check failed: {e}")
+            return False, f"Health check error: {str(e)}"
+
+        # All critical systems OK
+        return True, ""
 
     # ------------------------
     # POWER ENABLE
@@ -254,36 +305,36 @@ class Module(Node):
 
     def _initialize_navigation(self):
         """Initialize Nav2 navigator and explorer."""
-        self.get_logger().info("Initializing navigation components...")
+        self.get_logger().info(f"Initializing navigation components for {self.robot_namespace}...")
 
-        # Create BasicNavigator
-        self.navigator = BasicNavigator()
+        # Create BasicNavigator with unique node name and namespace
+        nav_node_name = f'navigator_{self.module_id.replace("-", "_")}'
 
-        # Wait for Nav2 to be ready with timeout
-        self.get_logger().info("Waiting for Nav2 to activate (timeout: 10s)...")
-        start_time = time.time()
-        nav2_ready = False
+        # BasicNavigator needs the namespace to communicate with the correct robot
+        if self.robot_namespace:
+            self.navigator = BasicNavigator(node_name=nav_node_name, namespace=self.robot_namespace)
+        else:
+            self.navigator = BasicNavigator(node_name=nav_node_name)
 
-        while time.time() - start_time < 10.0:
-            try:
-                # Check if Nav2 services are available
-                service_list = self.navigator.get_service_names_and_types()
-                nav2_services = [s for s in service_list if 'nav2' in s[0] or 'navigate_to_pose' in s[0]]
+        # Add navigator node to executor so it can be spun
+        if self.executor:
+            self.executor.add_node(self.navigator)
 
-                if nav2_services:
-                    nav2_ready = True
-                    break
+        # Wait for Nav2 action server to be ready using event-driven approach
+        # BasicNavigator already has the action client for /navigate_to_pose
+        # We just need to wait for the server to become available
 
-            except Exception as e:
-                self.get_logger().debug(f"Nav2 check failed: {e}")
+        self.get_logger().info("Waiting for Nav2 action server (/navigate_to_pose)...")
 
-            time.sleep(0.5)
+        # Use the navigator's built-in action client's wait_for_server method
+        # This is event-driven - returns as soon as server is detected
+        if not self.navigator.nav_to_pose_client.wait_for_server(timeout_sec=60.0):
+            raise RuntimeError(
+                "Nav2 action server not available after 60s. "
+                "Are you running in full mode (-#f)?"
+            )
 
-        if not nav2_ready:
-            raise RuntimeError("Nav2 not available - are you running in sim mode without navigation (-#s)? Try full mode (-#f) for exploration tasks.")
-
-        # Wait for Nav2 to fully activate
-        self.navigator.waitUntilNav2Active()
+        self.get_logger().info("✓ Nav2 action server ready")
 
         # Create Explorer
         self.explorer = Explorer(self, self.navigator)
@@ -324,10 +375,10 @@ class Module(Node):
 
             result = subprocess.run(
                 ["ros2", "run", "nav2_map_server", "map_saver_cli",
-                 "-f", map_file, "--ros-args", "-p", "save_map_timeout:=5000"],
+                 "-f", map_file, "--ros-args", "-p", "save_map_timeout:=5000.0"],
                 capture_output=True,
                 text=True,
-                timeout=10
+                timeout=30
             )
 
             if result.returncode != 0:
@@ -370,14 +421,42 @@ class Module(Node):
 # ------------------------
 def main():
     rclpy.init()
-    node = Module()
+
+    # Use MultiThreadedExecutor to handle both Module and BasicNavigator nodes
+    executor = MultiThreadedExecutor(num_threads=4)
+
+    # Create a temporary node to read parameters
+    temp_node = Node('temp_param_reader')
+    temp_node.declare_parameter('robot_namespace', '')
+    temp_node.declare_parameter('module_id', '')
+    temp_node.declare_parameter('spawn_x', 0.0)
+    temp_node.declare_parameter('spawn_y', 0.0)
+
+    robot_namespace = temp_node.get_parameter('robot_namespace').value
+    module_id_param = temp_node.get_parameter('module_id').value
+    spawn_x = temp_node.get_parameter('spawn_x').value
+    spawn_y = temp_node.get_parameter('spawn_y').value
+    temp_node.destroy_node()
+
+    # Create module node with executor reference and robot namespace
+    # Use provided module_id or None to trigger auto-generation
+    module_id = module_id_param if module_id_param else None
+    node = Module(module_id=module_id, executor=executor, robot_namespace=robot_namespace)
+
+    # Store spawn position for potential use (e.g., Gazebo spawning)
+    node.spawn_x = spawn_x
+    node.spawn_y = spawn_y
+
+    executor.add_node(node)
+
     try:
-        rclpy.spin(node)
+        executor.spin()
     except KeyboardInterrupt:
         pass  # Graceful shutdown on Ctrl+C
     except Exception as e:
         node.get_logger().error(f"Unexpected error: {e}")
     finally:
+        executor.shutdown()
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()

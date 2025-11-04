@@ -54,6 +54,7 @@ setup(
             'dock_multi = coven_core.dock_node_multi:main',
             'module = coven_core.module_node:main',
             'module_flaky = coven_core.module_flaky:main',
+            'spawn_module = coven_core.spawn_module:main',
         ],
     },
 )

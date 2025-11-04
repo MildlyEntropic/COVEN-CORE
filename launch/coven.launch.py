@@ -69,9 +69,8 @@ def generate_launch_description():
         description='Gazebo world (warehouse, maze, depot, empty)'
     )
 
-    # Config files
-    nav2_params = os.path.join(pkg_coven, 'config', 'nav2_simple.yaml')
-    slam_params = os.path.join(pkg_coven, 'config', 'slam_simple.yaml')
+    # Package directories
+    pkg_tb4_nav = get_package_share_directory('turtlebot4_navigation')
 
     # ============================================================================
     # SIMULATION (optional)
@@ -89,101 +88,30 @@ def generate_launch_description():
     )
 
     # ============================================================================
-    # NAVIGATION STACK (optional)
+    # NAVIGATION STACK (optional) - Use TurtleBot4 launch files
     # ============================================================================
 
-    # SLAM Toolbox
-    slam_node = Node(
-        package='slam_toolbox',
-        executable='sync_slam_toolbox_node',
-        name='slam_toolbox',
-        parameters=[
-            slam_params,
-            {'use_sim_time': use_sim_time}
-        ],
-        output='screen',
+    # SLAM - Use TurtleBot4's SLAM launch file
+    slam_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            PathJoinSubstitution([pkg_tb4_nav, 'launch', 'slam.launch.py'])
+        ),
+        launch_arguments={
+            'use_sim_time': use_sim_time,
+            'sync': 'true',  # Use sync SLAM for better performance
+            'use_lifecycle_manager': 'false',  # SLAM handles its own lifecycle
+        }.items(),
         condition=IfCondition(with_nav)
     )
 
-    # Nav2 Controller Server
-    controller_server = Node(
-        package='nav2_controller',
-        executable='controller_server',
-        name='controller_server',
-        output='screen',
-        parameters=[nav2_params],
-        remappings=[('cmd_vel', '/cmd_vel')],
-        condition=IfCondition(with_nav)
-    )
-
-    # Nav2 Planner Server
-    planner_server = Node(
-        package='nav2_planner',
-        executable='planner_server',
-        name='planner_server',
-        output='screen',
-        parameters=[nav2_params],
-        condition=IfCondition(with_nav)
-    )
-
-    # Nav2 Behavior Server
-    behavior_server = Node(
-        package='nav2_behaviors',
-        executable='behavior_server',
-        name='behavior_server',
-        output='screen',
-        parameters=[nav2_params],
-        condition=IfCondition(with_nav)
-    )
-
-    # Nav2 BT Navigator
-    bt_navigator = Node(
-        package='nav2_bt_navigator',
-        executable='bt_navigator',
-        name='bt_navigator',
-        output='screen',
-        parameters=[nav2_params],
-        condition=IfCondition(with_nav)
-    )
-
-    # Nav2 Waypoint Follower
-    waypoint_follower = Node(
-        package='nav2_waypoint_follower',
-        executable='waypoint_follower',
-        name='waypoint_follower',
-        output='screen',
-        parameters=[nav2_params],
-        condition=IfCondition(with_nav)
-    )
-
-    # Velocity Smoother
-    velocity_smoother = Node(
-        package='nav2_velocity_smoother',
-        executable='velocity_smoother',
-        name='velocity_smoother',
-        output='screen',
-        parameters=[nav2_params],
-        condition=IfCondition(with_nav)
-    )
-
-    # Nav2 Lifecycle Manager
-    lifecycle_manager = Node(
-        package='nav2_lifecycle_manager',
-        executable='lifecycle_manager',
-        name='lifecycle_manager_navigation',
-        output='screen',
-        parameters=[
-            {'use_sim_time': use_sim_time},
-            {'autostart': True},
-            {'node_names': [
-                'controller_server',
-                'planner_server',
-                'behavior_server',
-                'bt_navigator',
-                'waypoint_follower',
-                'velocity_smoother'
-            ]}
-        ],
+    # Nav2 - Use TurtleBot4's Nav2 launch file
+    nav2_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            PathJoinSubstitution([pkg_tb4_nav, 'launch', 'nav2.launch.py'])
+        ),
+        launch_arguments={
+            'use_sim_time': use_sim_time,
+        }.items(),
         condition=IfCondition(with_nav)
     )
 
@@ -234,15 +162,9 @@ def generate_launch_description():
     # Add simulation (optional)
     ld.add_action(simulation)
 
-    # Add navigation nodes (optional)
-    ld.add_action(slam_node)
-    ld.add_action(controller_server)
-    ld.add_action(planner_server)
-    ld.add_action(behavior_server)
-    ld.add_action(bt_navigator)
-    ld.add_action(waypoint_follower)
-    ld.add_action(velocity_smoother)
-    ld.add_action(lifecycle_manager)
+    # Add navigation stack (optional) - using TurtleBot4 launch files
+    ld.add_action(slam_launch)
+    ld.add_action(nav2_launch)
 
     # Add COVEN core (always)
     ld.add_action(dock_node)
