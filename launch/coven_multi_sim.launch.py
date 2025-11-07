@@ -9,7 +9,7 @@ Usage:
     ros2 launch coven_core coven_multi_sim.launch.py num_robots:=3
     ros2 launch coven_core coven_multi_sim.launch.py num_robots:=5 world:=depot
 
-Author: Alexander Shultis (with Claude Code assistance)
+Author: Alexander Shultis
 Date: November 2025
 """
 

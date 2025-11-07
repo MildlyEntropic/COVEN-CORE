@@ -24,7 +24,6 @@ import time
 from typing import List, Tuple, Optional
 
 # --- Third-party (ROS2) ---
-import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import OccupancyGrid
@@ -205,12 +204,13 @@ class Explorer:
         self.node.get_logger().info(f"Generated {len(goals)} random exploration goals (fallback mode)")
         return goals
 
-    def explore(self, duration: float = EXPLORATION_TIMEOUT) -> Tuple[bool, dict]:
+    def explore(self, duration: float = EXPLORATION_TIMEOUT, feedback_callback=None) -> Tuple[bool, dict]:
         """
         Execute exploration mission.
 
         Args:
             duration: Maximum exploration time in seconds
+            feedback_callback: Optional callback function(coverage, frontiers) for periodic updates
 
         Returns:
             Tuple of (success, metrics_dict)
@@ -240,6 +240,13 @@ class Explorer:
             if coverage >= COVERAGE_THRESHOLD:
                 self.node.get_logger().info(f"Coverage threshold reached: {coverage:.1%}")
                 break
+
+            # Call feedback callback if provided
+            if feedback_callback:
+                try:
+                    feedback_callback(coverage, len(self.find_frontiers()))
+                except Exception as e:
+                    self.node.get_logger().warn(f"Feedback callback failed: {e}")
 
             # Find and navigate to frontiers
             frontiers = self.find_frontiers()

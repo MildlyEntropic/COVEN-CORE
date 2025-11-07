@@ -35,11 +35,18 @@ import uuid
 import rclpy
 from rclpy.node import Node
 from rclpy.executors import MultiThreadedExecutor
+from rclpy.action import ActionServer, GoalResponse, CancelResponse
+from rclpy.action.server import ServerGoalHandle
 from std_msgs.msg import String
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped, TransformStamped
+from tf2_ros import TransformBroadcaster, Buffer, TransformListener
+from tf2_ros import LookupException, ConnectivityException, ExtrapolationException
 
 # --- Navigation ---
 from nav2_simple_commander.robot_navigator import BasicNavigator
+
+# --- COVEN action interfaces ---
+from coven_interfaces.action import ExecuteTask
 
 # --- Local (COVEN) ---
 import coven_core.common as common
@@ -50,8 +57,11 @@ from coven_core.exploration import Explorer
 # ------------------------
 # --- Constants ---
 # ------------------------
-HB_PERIOD = 0.8  # seconds between heartbeats
-TASK_DELAY = 120.0  # exploration duration in seconds (2 minutes for meaningful mapping)
+# NOTE: These are now ROS2 parameters - defaults defined here for reference
+# Actual values loaded from config/coven_params.yaml
+DEFAULT_HB_PERIOD = 0.8  # seconds between heartbeats
+DEFAULT_TASK_TIMEOUT = 300.0  # seconds - watchdog timer for task execution
+DEFAULT_MAP_STORAGE_DIR = '~/coven_maps'  # temporary map storage
 
 
 # ------------------------
@@ -63,14 +73,38 @@ class Module(Node):
     def __init__(self, module_id=None, module_type="ReconRover", fw="0.0.1", executor=None, robot_namespace=""):
         super().__init__('coven_module')
 
+        # Declare ROS2 parameters (loaded from config/coven_params.yaml)
+        self.declare_parameter('heartbeat_period', DEFAULT_HB_PERIOD)
+        self.declare_parameter('task_timeout', DEFAULT_TASK_TIMEOUT)
+        self.declare_parameter('map_storage_dir', DEFAULT_MAP_STORAGE_DIR)
+
+        # Exploration parameters
+        self.declare_parameter('exploration.frontier_radius', 3.0)
+        self.declare_parameter('exploration.min_frontier_size', 10)
+        self.declare_parameter('exploration.coverage_threshold', 0.80)
+        self.declare_parameter('exploration.timeout', 300.0)
+        self.declare_parameter('exploration.no_frontier_limit', 3)
+        self.declare_parameter('exploration.nav_timeout', 60.0)
+
+        # Get parameter values
+        self.hb_period = self.get_parameter('heartbeat_period').value
+        self.task_timeout = self.get_parameter('task_timeout').value
+        self.map_storage_dir = os.path.expanduser(self.get_parameter('map_storage_dir').value)
+
         self.module_id = module_id or f"RR-{str(uuid.uuid4())[:6]}"
         self.module_type = module_type
         self.fw = fw
         self.state = ModuleState.BOOT
         self.seq = 0
         self.hb_timer = None
+        self.task_watchdog_timer = None  # Watchdog to prevent stuck tasks
         self.executor = executor  # Store executor reference to add navigator node
         self.robot_namespace = robot_namespace  # Namespace for robot-specific topics
+
+        # TF2 for pose tracking
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
+        self.tf_broadcaster = TransformBroadcaster(self)
 
         # Navigation components (initialized on demand)
         self.navigator = None
@@ -101,6 +135,20 @@ class Module(Node):
         self.pub_task_ack = self.create_publisher(String, 'coven/task_ack', 10)
         self.pub_task_start = self.create_publisher(String, 'coven/task_start', 10)
         self.pub_task_complete = self.create_publisher(String, 'coven/task_complete', 10)
+
+        # Action server for task execution (modern alternative to topic-based approach)
+        # Replace hyphens with underscores for valid topic name
+        action_name = f'coven/{self.module_id.replace("-", "_")}/execute_task'
+        self._action_server = ActionServer(
+            self,
+            ExecuteTask,
+            action_name,
+            execute_callback=self._execute_action_callback,
+            goal_callback=self._goal_callback,
+            cancel_callback=self._cancel_callback
+        )
+        self._current_goal_handle = None
+        self._cancel_requested = False
 
         self.get_logger().info(f"Module {self.module_id} booted on 5V — waiting for IDENTIFY.")
 
@@ -193,8 +241,8 @@ class Module(Node):
     def start_heartbeat(self):
         if self.hb_timer:
             return
-        self.hb_timer = self.create_timer(HB_PERIOD, self.send_heartbeat)
-        self.get_logger().info(f"Heartbeat started for {self.module_id}")
+        self.hb_timer = self.create_timer(self.hb_period, self.send_heartbeat)
+        self.get_logger().info(f"Heartbeat started for {self.module_id} (period: {self.hb_period}s)")
 
     def stop_heartbeat(self):
         if self.hb_timer:
@@ -206,6 +254,54 @@ class Module(Node):
         self.seq += 1
         hb = common.Heartbeat(module_id=self.module_id, seq=self.seq)
         self.pub_hb.publish(String(data=common.hb_encode(hb)))
+
+    # ------------------------
+    # TASK WATCHDOG
+    # ------------------------
+    def _start_task_watchdog(self, task_name: str):
+        """Start watchdog timer to prevent stuck tasks."""
+        if self.task_watchdog_timer:
+            self.task_watchdog_timer.cancel()
+
+        timeout = self.task_timeout
+        self.task_watchdog_timer = self.create_timer(
+            timeout,
+            lambda: self._on_task_timeout(task_name)
+        )
+        self.get_logger().info(f"Task watchdog started: {task_name} (timeout: {timeout}s)")
+
+    def _stop_task_watchdog(self):
+        """Stop watchdog timer after task completes."""
+        if self.task_watchdog_timer:
+            self.task_watchdog_timer.cancel()
+            self.task_watchdog_timer = None
+            self.get_logger().debug("Task watchdog stopped")
+
+    def _on_task_timeout(self, task_name: str):
+        """Handle task timeout - force return to NORMAL state."""
+        self.get_logger().error(
+            f"TASK TIMEOUT: {task_name} exceeded {self.task_timeout}s limit. "
+            f"Forcing return to NORMAL state."
+        )
+
+        # Force state transition
+        self.state = ModuleState.NORMAL
+        self.start_heartbeat()
+
+        # Emit task complete with failure
+        tc = common.TaskComplete(
+            module_id=self.module_id,
+            task=task_name,
+            success=False,
+            note=f"Task timeout after {self.task_timeout}s",
+            map_data="",
+            map_yaml="",
+            exploration_metrics={}
+        )
+        self.pub_task_complete.publish(String(data=common.task_complete_encode(tc)))
+
+        # Stop the watchdog
+        self._stop_task_watchdog()
 
     # ------------------------
     # TASK HANDLING
@@ -226,6 +322,10 @@ class Module(Node):
         # Stop heartbeat and emit task start
         self.stop_heartbeat()
         self.state = ModuleState.FIELD_OPS
+
+        # Start watchdog timer to prevent stuck tasks
+        self._start_task_watchdog(task_name)
+
         ts = common.TaskStart(module_id=self.module_id, task=task_name)
         self.pub_task_start.publish(String(data=common.task_start_encode(ts)))
         self.get_logger().info(f"Executing FIELD_OPS for task: {task_name}")
@@ -245,6 +345,10 @@ class Module(Node):
                         self.get_logger().error(f"Navigation initialization failed: {e}")
                         self.get_logger().warn("Cannot execute exploration task without Nav2. Returning to dock.")
                         success = False
+
+                        # Stop watchdog before early return
+                        self._stop_task_watchdog()
+
                         # Early return to dock without exploration
                         self.state = ModuleState.NORMAL
                         self.start_heartbeat()
@@ -262,11 +366,13 @@ class Module(Node):
                         self.get_logger().info(f"Task {task_name} failed — returning to NORMAL state")
                         return
 
-                # Store dock position for return
+                # Store dock position for return and publish as TF
                 self.dock_pose = self._get_current_pose()
+                self._publish_dock_transform(self.dock_pose)
 
-                # Execute exploration
-                success, metrics = self.explorer.explore(duration=TASK_DELAY)
+                # Execute exploration (use exploration.timeout parameter)
+                explore_timeout = self.get_parameter('exploration.timeout').value
+                success, metrics = self.explorer.explore(duration=explore_timeout)
 
                 # Return to dock
                 if success and self.dock_pose:
@@ -279,82 +385,347 @@ class Module(Node):
 
             else:
                 # Fallback to simple delay for other task types
-                self.get_logger().info(f"Unknown task type '{task_name}', using delay simulation")
-                time.sleep(TASK_DELAY)
+                delay_time = self.get_parameter('exploration.timeout').value
+                self.get_logger().info(f"Unknown task type '{task_name}', using delay simulation ({delay_time}s)")
+                time.sleep(delay_time)
                 success = True
 
         except Exception as e:
             self.get_logger().error(f"Task execution failed: {e}")
             success = False
 
-        # Return and emit task complete
+        finally:
+            # Stop watchdog timer (task completed or failed)
+            self._stop_task_watchdog()
+
+            # Return and emit task complete
+            self.state = ModuleState.NORMAL
+            self.start_heartbeat()
+
+            tc = common.TaskComplete(
+                module_id=self.module_id,
+                task=task_name,
+                success=success,
+                note=f"Exploration complete: {metrics.get('coverage', 0):.1%} coverage" if success else "Task failed",
+                map_data=map_data_b64,
+                map_yaml=map_yaml_b64,
+                exploration_metrics=metrics
+            )
+            self.pub_task_complete.publish(String(data=common.task_complete_encode(tc)))
+            self.get_logger().info(f"Task {task_name} complete — rejoined dock")
+
+    # ------------------------
+    # ACTION SERVER CALLBACKS
+    # ------------------------
+    def _goal_callback(self, goal_request):
+        """Accept or reject goal requests."""
+        # Check if module is in NORMAL state and ready to accept tasks
+        if self.state != ModuleState.NORMAL:
+            self.get_logger().warn(
+                f"Rejecting task goal: module not in NORMAL state (current: {self.state})"
+            )
+            return GoalResponse.REJECT
+
+        # Check if module_id matches
+        if goal_request.module_id != self.module_id:
+            self.get_logger().warn(
+                f"Rejecting task goal: module_id mismatch "
+                f"(requested: {goal_request.module_id}, actual: {self.module_id})"
+            )
+            return GoalResponse.REJECT
+
+        self.get_logger().info(f"Accepting task goal: {goal_request.task}")
+        return GoalResponse.ACCEPT
+
+    def _cancel_callback(self, goal_handle):
+        """Handle cancellation requests."""
+        self.get_logger().info("Received cancel request for task")
+        self._cancel_requested = True
+        return CancelResponse.ACCEPT
+
+    async def _execute_action_callback(self, goal_handle: ServerGoalHandle):
+        """Execute task via action server (replaces topic-based execute_task)."""
+        self.get_logger().info(f"Executing task via action server: {goal_handle.request.task}")
+
+        self._current_goal_handle = goal_handle
+        self._cancel_requested = False
+
+        # Stop heartbeat and transition to FIELD_OPS
+        self.stop_heartbeat()
+        self.state = ModuleState.FIELD_OPS
+        self._start_task_watchdog(goal_handle.request.task)
+
+        task_name = goal_handle.request.task
+        success = False
+        map_data_b64 = ""
+        map_yaml_b64 = ""
+        metrics = {}
+        start_time = time.time()
+
+        try:
+            # Send initial feedback
+            feedback = ExecuteTask.Feedback()
+            feedback.status = "starting"
+            feedback.progress = 0.0
+            feedback.elapsed_time = 0.0
+            goal_handle.publish_feedback(feedback)
+
+            if "explore" in task_name.lower():
+                # Initialize navigation if not already done
+                if not self.navigator:
+                    feedback.status = "initializing_nav2"
+                    goal_handle.publish_feedback(feedback)
+
+                    try:
+                        self._initialize_navigation()
+                    except RuntimeError as e:
+                        self.get_logger().error(f"Navigation initialization failed: {e}")
+                        result = ExecuteTask.Result()
+                        result.success = False
+                        result.note = "Nav2 not available - run in full mode (-#f) for exploration"
+                        result.duration = time.time() - start_time
+                        self._cleanup_after_task()
+                        goal_handle.abort()
+                        return result
+
+                # Check for cancellation
+                if self._cancel_requested or not goal_handle.is_active:
+                    self.get_logger().info("Task cancelled during initialization")
+                    result = ExecuteTask.Result()
+                    result.success = False
+                    result.note = "Task cancelled"
+                    result.duration = time.time() - start_time
+                    self._cleanup_after_task()
+                    goal_handle.canceled()
+                    return result
+
+                # Store dock position
+                self.dock_pose = self._get_current_pose()
+                self._publish_dock_transform(self.dock_pose)
+
+                # Send exploration feedback
+                feedback.status = "exploring"
+                feedback.progress = 0.1
+                feedback.elapsed_time = time.time() - start_time
+                goal_handle.publish_feedback(feedback)
+
+                # Execute exploration
+                explore_timeout = self.get_parameter('exploration.timeout').value
+                success, metrics = self.explorer.explore(
+                    duration=explore_timeout,
+                    feedback_callback=lambda coverage, frontiers: self._publish_exploration_feedback(
+                        goal_handle, coverage, frontiers, time.time() - start_time
+                    )
+                )
+
+                # Check for cancellation before return
+                if self._cancel_requested or not goal_handle.is_active:
+                    self.get_logger().info("Task cancelled during exploration")
+                    result = ExecuteTask.Result()
+                    result.success = False
+                    result.note = "Task cancelled"
+                    result.duration = time.time() - start_time
+                    self._cleanup_after_task()
+                    goal_handle.canceled()
+                    return result
+
+                # Return to dock
+                if success and self.dock_pose:
+                    feedback.status = "returning_to_dock"
+                    feedback.progress = 0.9
+                    goal_handle.publish_feedback(feedback)
+
+                    return_success = self.explorer.return_to_dock(self.dock_pose)
+                    if not return_success:
+                        self.get_logger().warn("Failed to return to dock, using best effort")
+
+                # Save map
+                map_data_b64, map_yaml_b64 = self._save_and_serialize_map()
+
+            else:
+                # Fallback for non-exploration tasks
+                delay_time = self.get_parameter('exploration.timeout').value
+                self.get_logger().info(f"Unknown task type '{task_name}', using delay simulation ({delay_time}s)")
+                time.sleep(delay_time)
+                success = True
+
+        except Exception as e:
+            self.get_logger().error(f"Task execution failed: {e}")
+            success = False
+
+        finally:
+            self._cleanup_after_task()
+
+        # Prepare result
+        result = ExecuteTask.Result()
+        result.success = success
+        result.note = f"Exploration complete: {metrics.get('coverage', 0):.1%} coverage" if success else "Task failed"
+        result.map_data = map_data_b64
+        result.map_yaml = map_yaml_b64
+        result.coverage = metrics.get('coverage', 0.0)
+        result.duration = time.time() - start_time
+        result.distance_traveled = metrics.get('distance', 0.0)
+        result.frontiers_explored = metrics.get('frontiers', 0)
+
+        if success:
+            goal_handle.succeed()
+        else:
+            goal_handle.abort()
+
+        self.get_logger().info(f"Action task {task_name} complete")
+        return result
+
+    def _publish_exploration_feedback(self, goal_handle, coverage, frontiers, elapsed):
+        """Publish feedback during exploration."""
+        if goal_handle.is_active:
+            feedback = ExecuteTask.Feedback()
+            feedback.status = "exploring"
+            feedback.progress = min(coverage, 0.9)  # Cap at 90% until return to dock
+            feedback.current_coverage = coverage
+            feedback.frontiers_found = frontiers
+            feedback.elapsed_time = elapsed
+            goal_handle.publish_feedback(feedback)
+
+    def _cleanup_after_task(self):
+        """Clean up after task execution (for action server)."""
+        self._stop_task_watchdog()
         self.state = ModuleState.NORMAL
         self.start_heartbeat()
+        self._current_goal_handle = None
+        self._cancel_requested = False
 
-        tc = common.TaskComplete(
-            module_id=self.module_id,
-            task=task_name,
-            success=success,
-            note=f"Exploration complete: {metrics.get('coverage', 0):.1%} coverage" if success else "Task failed",
-            map_data=map_data_b64,
-            map_yaml=map_yaml_b64,
-            exploration_metrics=metrics
+    def _initialize_navigation(self, max_retries=3):
+        """
+        Initialize Nav2 navigator and explorer with retry logic.
+
+        Args:
+            max_retries: Maximum number of initialization attempts
+
+        Raises:
+            RuntimeError: If initialization fails after all retries
+        """
+        last_error = None
+
+        for attempt in range(max_retries):
+            try:
+                self.get_logger().info(
+                    f"Initializing navigation components for {self.robot_namespace}... "
+                    f"(attempt {attempt + 1}/{max_retries})"
+                )
+
+                # Create BasicNavigator with unique node name and namespace
+                nav_node_name = f'navigator_{self.module_id.replace("-", "_")}'
+
+                # BasicNavigator needs the namespace to communicate with the correct robot
+                if self.robot_namespace:
+                    self.navigator = BasicNavigator(node_name=nav_node_name, namespace=self.robot_namespace)
+                else:
+                    self.navigator = BasicNavigator(node_name=nav_node_name)
+
+                # Add navigator node to executor so it can be spun
+                if self.executor:
+                    self.executor.add_node(self.navigator)
+
+                # Wait for Nav2 action server to be ready using event-driven approach
+                # BasicNavigator already has the action client for /navigate_to_pose
+                # We just need to wait for the server to become available
+
+                self.get_logger().info("Waiting for Nav2 action server (/navigate_to_pose)...")
+
+                # Use the navigator's built-in action client's wait_for_server method
+                # This is event-driven - returns as soon as server is detected
+                if not self.navigator.nav_to_pose_client.wait_for_server(timeout_sec=60.0):
+                    raise RuntimeError(
+                        "Nav2 action server not available after 60s. "
+                        "Are you running in full mode (-#f)?"
+                    )
+
+                self.get_logger().info("✓ Nav2 action server ready")
+
+                # Create Explorer
+                self.explorer = Explorer(self, self.navigator)
+
+                self.get_logger().info("Navigation components ready")
+                return  # Success!
+
+            except Exception as e:
+                last_error = e
+                self.get_logger().warn(
+                    f"Navigation initialization attempt {attempt + 1} failed: {e}"
+                )
+
+                # Clean up on failure
+                if self.navigator and self.executor:
+                    try:
+                        self.executor.remove_node(self.navigator)
+                    except Exception:
+                        pass
+                self.navigator = None
+                self.explorer = None
+
+                if attempt < max_retries - 1:
+                    retry_delay = 2.0 * (attempt + 1)  # Exponential backoff
+                    self.get_logger().info(f"Retrying in {retry_delay}s...")
+                    time.sleep(retry_delay)
+
+        # All retries failed
+        raise RuntimeError(
+            f"Navigation initialization failed after {max_retries} attempts. "
+            f"Last error: {last_error}"
         )
-        self.pub_task_complete.publish(String(data=common.task_complete_encode(tc)))
-        self.get_logger().info(f"Task {task_name} complete — rejoined dock")
 
-    def _initialize_navigation(self):
-        """Initialize Nav2 navigator and explorer."""
-        self.get_logger().info(f"Initializing navigation components for {self.robot_namespace}...")
+    def _publish_dock_transform(self, dock_pose: PoseStamped):
+        """Publish a static transform for the dock location."""
+        transform = TransformStamped()
+        transform.header.stamp = self.get_clock().now().to_msg()
+        transform.header.frame_id = 'map'
+        transform.child_frame_id = f'{self.module_id}_dock'
 
-        # Create BasicNavigator with unique node name and namespace
-        nav_node_name = f'navigator_{self.module_id.replace("-", "_")}'
+        transform.transform.translation.x = dock_pose.pose.position.x
+        transform.transform.translation.y = dock_pose.pose.position.y
+        transform.transform.translation.z = dock_pose.pose.position.z
+        transform.transform.rotation = dock_pose.pose.orientation
 
-        # BasicNavigator needs the namespace to communicate with the correct robot
-        if self.robot_namespace:
-            self.navigator = BasicNavigator(node_name=nav_node_name, namespace=self.robot_namespace)
-        else:
-            self.navigator = BasicNavigator(node_name=nav_node_name)
-
-        # Add navigator node to executor so it can be spun
-        if self.executor:
-            self.executor.add_node(self.navigator)
-
-        # Wait for Nav2 action server to be ready using event-driven approach
-        # BasicNavigator already has the action client for /navigate_to_pose
-        # We just need to wait for the server to become available
-
-        self.get_logger().info("Waiting for Nav2 action server (/navigate_to_pose)...")
-
-        # Use the navigator's built-in action client's wait_for_server method
-        # This is event-driven - returns as soon as server is detected
-        if not self.navigator.nav_to_pose_client.wait_for_server(timeout_sec=60.0):
-            raise RuntimeError(
-                "Nav2 action server not available after 60s. "
-                "Are you running in full mode (-#f)?"
-            )
-
-        self.get_logger().info("✓ Nav2 action server ready")
-
-        # Create Explorer
-        self.explorer = Explorer(self, self.navigator)
-
-        self.get_logger().info("Navigation components ready")
+        self.tf_broadcaster.sendTransform(transform)
+        self.get_logger().info(f"Published dock transform at ({dock_pose.pose.position.x:.2f}, {dock_pose.pose.position.y:.2f})")
 
     def _get_current_pose(self) -> PoseStamped:
-        """Get the current robot pose."""
-        pose = PoseStamped()
-        pose.header.frame_id = 'map'
-        pose.header.stamp = self.get_clock().now().to_msg()
+        """Get the current robot pose using TF2."""
+        try:
+            # Try to get transform from map to base_link
+            # This gives us the robot's pose in the map frame
+            transform = self.tf_buffer.lookup_transform(
+                'map',
+                f'{self.robot_namespace}/base_link' if self.robot_namespace else 'base_link',
+                rclpy.time.Time(),
+                timeout=rclpy.duration.Duration(seconds=1.0)
+            )
 
-        # In simulation, assume starting at origin
-        # In production, use TF2 to get actual pose from /odom or /base_link
-        pose.pose.position.x = 0.0
-        pose.pose.position.y = 0.0
-        pose.pose.position.z = 0.0
-        pose.pose.orientation.w = 1.0
+            # Convert transform to PoseStamped
+            pose = PoseStamped()
+            pose.header.frame_id = 'map'
+            pose.header.stamp = transform.header.stamp
+            pose.pose.position.x = transform.transform.translation.x
+            pose.pose.position.y = transform.transform.translation.y
+            pose.pose.position.z = transform.transform.translation.z
+            pose.pose.orientation = transform.transform.rotation
 
-        return pose
+            return pose
+
+        except (LookupException, ConnectivityException, ExtrapolationException) as e:
+            self.get_logger().warn(f"Failed to get robot pose via TF2: {e}")
+            self.get_logger().warn("Falling back to origin pose")
+
+            # Fallback: return origin pose
+            pose = PoseStamped()
+            pose.header.frame_id = 'map'
+            pose.header.stamp = self.get_clock().now().to_msg()
+            pose.pose.position.x = 0.0
+            pose.pose.position.y = 0.0
+            pose.pose.position.z = 0.0
+            pose.pose.orientation.w = 1.0
+
+            return pose
 
     def _save_and_serialize_map(self) -> tuple:
         """
@@ -364,8 +735,8 @@ class Module(Node):
             Tuple of (map_data_b64, map_yaml_b64) - Base64 encoded strings
         """
         try:
-            # Create temporary directory for map files
-            map_dir = f"/tmp/coven_maps/{self.module_id}"
+            # Create temporary directory for map files (using parameter)
+            map_dir = os.path.join(self.map_storage_dir, self.module_id)
             os.makedirs(map_dir, exist_ok=True)
 
             map_file = f"{map_dir}/exploration_map"

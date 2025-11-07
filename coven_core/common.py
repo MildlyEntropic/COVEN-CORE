@@ -18,11 +18,15 @@ Date: September 2025
 # ------------------------
 # --- Standard library ---
 import json
+import logging
 from dataclasses import dataclass
 from enum import Enum
 
 # --- Third-party (ROS2) ---
 from std_msgs.msg import String
+
+# Module-level logger
+logger = logging.getLogger(__name__)
 
 
 # ------------------------
@@ -167,7 +171,12 @@ def ident_req_decode(msg: String):
     try:
         d = json.loads(msg.data)
         return IdentifyReq(req_id=d.get("req_id", ""))
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to decode IdentifyReq: {e}")
+        logger.debug(f"Malformed data: {msg.data[:100]}...")
+        return None
+    except Exception as e:
+        logger.error(f"Unexpected error decoding IdentifyReq: {e}")
         return None
 
 def ident_rep_encode(rep: IdentifyRep) -> str:
@@ -187,7 +196,12 @@ def ident_rep_decode(msg: String):
             module_type=d.get("module_type", ""),
             fw=d.get("fw", ""),
         )
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to decode IdentifyRep: {e}")
+        logger.debug(f"Malformed data: {msg.data[:100]}...")
+        return None
+    except Exception as e:
+        logger.error(f"Unexpected error decoding IdentifyRep: {e}")
         return None
 
 # VERIFY
@@ -198,7 +212,12 @@ def verify_req_decode(msg: String):
     try:
         d = json.loads(msg.data)
         return VerifyReq(module_id=d.get("module_id", ""))
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to decode VerifyReq: {e}")
+        logger.debug(f"Malformed data: {msg.data[:100]}...")
+        return None
+    except Exception as e:
+        logger.error(f"Unexpected error decoding VerifyReq: {e}")
         return None
 
 def verify_rep_encode(rep: VerifyRep) -> str:
@@ -216,7 +235,12 @@ def verify_rep_decode(msg: String):
             ok=bool(d.get("ok", False)),
             reason=d.get("reason", ""),
         )
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to decode VerifyRep: {e}")
+        logger.debug(f"Malformed data: {msg.data[:100]}...")
+        return None
+    except Exception as e:
+        logger.error(f"Unexpected error decoding VerifyRep: {e}")
         return None
 
 # HEARTBEAT
@@ -227,7 +251,15 @@ def hb_decode(msg: String):
     try:
         d = json.loads(msg.data)
         return Heartbeat(module_id=d.get("module_id", ""), seq=int(d.get("seq", 0)))
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to decode Heartbeat: {e}")
+        logger.debug(f"Malformed data: {msg.data[:100]}...")
+        return None
+    except (ValueError, TypeError) as e:
+        logger.error(f"Invalid seq value in Heartbeat: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"Unexpected error decoding Heartbeat: {e}")
         return None
 
 # MISSION_REQ
@@ -238,7 +270,12 @@ def mission_req_decode(msg: String):
     try:
         d = json.loads(msg.data)
         return MissionRequest(task=d.get("task", ""))
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to decode MissionRequest: {e}")
+        logger.debug(f"Malformed data: {msg.data[:100]}...")
+        return None
+    except Exception as e:
+        logger.error(f"Unexpected error decoding MissionRequest: {e}")
         return None
 
 # TASK_REQ
@@ -249,7 +286,12 @@ def task_req_decode(msg: String):
     try:
         d = json.loads(msg.data)
         return TaskReq(module_id=d.get("module_id", ""), task=d.get("task", ""))
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to decode TaskReq: {e}")
+        logger.debug(f"Malformed data: {msg.data[:100]}...")
+        return None
+    except Exception as e:
+        logger.error(f"Unexpected error decoding TaskReq: {e}")
         return None
 
 # TASK_ACK
@@ -268,7 +310,12 @@ def task_ack_decode(msg: String):
             accepted=bool(d.get("accepted", False)),
             reason=d.get("reason", "")
         )
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to decode TaskAck: {e}")
+        logger.debug(f"Malformed data: {msg.data[:100]}...")
+        return None
+    except Exception as e:
+        logger.error(f"Unexpected error decoding TaskAck: {e}")
         return None
 
 # TASK_START
@@ -285,7 +332,12 @@ def task_start_decode(msg: String):
             module_id=d.get("module_id", ""),
             task=d.get("task", "")
         )
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to decode TaskStart: {e}")
+        logger.debug(f"Malformed data: {msg.data[:100]}...")
+        return None
+    except Exception as e:
+        logger.error(f"Unexpected error decoding TaskStart: {e}")
         return None
 
 # TASK_COMPLETE
@@ -312,5 +364,10 @@ def task_complete_decode(msg: String):
             map_yaml=d.get("map_yaml", ""),
             exploration_metrics=d.get("exploration_metrics", {})
         )
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to decode TaskComplete: {e}")
+        logger.debug(f"Malformed data: {msg.data[:100]}...")
+        return None
+    except Exception as e:
+        logger.error(f"Unexpected error decoding TaskComplete: {e}")
         return None

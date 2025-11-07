@@ -36,6 +36,7 @@ setup(
         ('share/' + package_name, ['package.xml']),
         (os.path.join('share', package_name, 'launch'), glob('launch/*.launch.py')),
         (os.path.join('share', package_name, 'models'), glob('models/*.sdf')),
+        (os.path.join('share', package_name, 'config'), glob('config/*.yaml')),
     ],
     install_requires=['setuptools', 'numpy', 'scipy'],
     zip_safe=True,
@@ -51,9 +52,7 @@ setup(
     entry_points={
         'console_scripts': [
             'dock = coven_core.dock_node:main',
-            'dock_multi = coven_core.dock_node_multi:main',
             'module = coven_core.module_node:main',
-            'module_flaky = coven_core.module_flaky:main',
             'spawn_module = coven_core.spawn_module:main',
         ],
     },

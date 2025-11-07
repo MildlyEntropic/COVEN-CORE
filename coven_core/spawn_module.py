@@ -37,7 +37,7 @@ class ModuleSpawner(Node):
             z: Z position in meters (default: 0.1 to sit on ground)
         """
         # Wait for Gazebo spawn service
-        self.get_logger().info(f"Waiting for /spawn_entity service...")
+        self.get_logger().info("Waiting for /spawn_entity service...")
         if not self.spawn_client.wait_for_service(timeout_sec=10.0):
             self.get_logger().error("Gazebo spawn service not available!")
             return False

@@ -1,18 +1,16 @@
 """
-module_node.py — COVEN Phase 1
+dock_node.py — COVEN Phase 1
 
-ROS2 node representing a single COVEN-compliant module (e.g., ReconRover).
-Implements the module side of the plug-level FSM lifecycle:
-
-    BOOT → IDENTIFY → WAIT_VERIFY → NORMAL → FIELD_OPS → NORMAL
+ROS2 node representing a docking hub that manages multiple modules.
+Handles multiple modules concurrently with independent FSM states.
 
 Responsibilities:
-- Respond to IDENTIFY_REQ with module ID/type/firmware.
-- Respond to VERIFY_REQ with VerifyRep (OK or FAIL).
-- React to power enable messages (+12V rail).
-- Publish periodic heartbeat while in NORMAL.
-- Respond to TASK_REQ with TASK_ACK, emit TASK_START,
-  simulate task, and emit TASK_COMPLETE.
+- Broadcast IDENTIFY_REQ and track module responses.
+- Verify modules and power-enable them.
+- Monitor periodic heartbeat from each module.
+- Receive high-level mission request.
+- Assign a single ENABLED module to carry it out.
+- Track task lifecycle: TaskReq → TaskAck → TaskStart → TaskComplete.
 
 Author: Alexander Shultis
 Date: September 2025
@@ -22,11 +20,12 @@ Date: September 2025
 # --- Imports ---
 # ------------------------
 # --- Standard library ---
+import base64
+import gzip
 import json
+import os
 import threading
-import time
-import uuid
-
+from datetime import datetime
 
 # --- Third-party (ROS2) ---
 import rclpy
@@ -35,151 +34,307 @@ from std_msgs.msg import String
 
 # --- Local (COVEN) ---
 import coven_core.common as common
-from coven_core.common import ModuleState
-
+from coven_core.common import (
+    COLOR_GREEN, COLOR_YELLOW, COLOR_ORANGE, COLOR_RED, COLOR_RESET
+)
 
 # ------------------------
 # --- Constants ---
 # ------------------------
-HB_PERIOD = 0.8  # seconds between heartbeats
-TASK_DELAY = 5.0  # simulate time away in field ops
+# NOTE: These are now ROS2 parameters - defaults defined here for reference
+# Actual values loaded from config/coven_params.yaml
+DEFAULT_IDENT_PERIOD = 5.0    # seconds between IDENTIFY broadcasts
+DEFAULT_HB_TIMEOUT   = 1.0    # expected heartbeat interval
+DEFAULT_MAX_MISSES   = 3      # after 3 misses, mark module as dropped
+DEFAULT_HB_JITTER    = 0.15   # jitter margin
+DEFAULT_MAP_STORAGE_DIR = '~/coven_maps'  # map storage location
 
 
 # ------------------------
-# --- Module Node ---
+# --- Dock Node ---
 # ------------------------
-class Module(Node):
-    """Module node that manages the FSM lifecycle for a single module."""
+class Dock(Node):
+    """Dock node that manages multiple modules and assigns tasks."""
 
-    def __init__(self, module_id=None, module_type="ReconRover", fw="0.0.1"):
-        super().__init__('coven_module')
+    def __init__(self):
+        super().__init__('coven_dock')
 
-        self.module_id = module_id or f"RR-{str(uuid.uuid4())[:6]}"
-        self.module_type = module_type
-        self.fw = fw
-        self.state = ModuleState.BOOT
-        self.seq = 0
-        self.hb_timer = None
+        # Declare ROS2 parameters (loaded from config/coven_params.yaml)
+        self.declare_parameter('identify_period', DEFAULT_IDENT_PERIOD)
+        self.declare_parameter('heartbeat_timeout', DEFAULT_HB_TIMEOUT)
+        self.declare_parameter('heartbeat_jitter', DEFAULT_HB_JITTER)
+        self.declare_parameter('max_heartbeat_misses', DEFAULT_MAX_MISSES)
+        self.declare_parameter('map_storage_dir', DEFAULT_MAP_STORAGE_DIR)
+
+        # Get parameter values
+        self.ident_period = self.get_parameter('identify_period').value
+        self.hb_timeout = self.get_parameter('heartbeat_timeout').value
+        self.hb_jitter = self.get_parameter('heartbeat_jitter').value
+        self.max_misses = int(self.get_parameter('max_heartbeat_misses').value)
+
+        self.modules = {}  # module_id → {state, last_hb, miss_count, paused}
+        self.live_hb = set()
+        self._mod_lock = threading.Lock()
+
+        # Map storage directory (from parameter)
+        self.map_storage_dir = os.path.expanduser(self.get_parameter('map_storage_dir').value)
+        os.makedirs(self.map_storage_dir, exist_ok=True)
 
         # ROS Topics
-        self.sub_ident_req = self.create_subscription(String, 'coven/identify_req', self.on_ident_req, 10)
-        self.pub_ident_rep = self.create_publisher(String, 'coven/identify_rep', 10)
+        self.pub_ident_req = self.create_publisher(String, 'coven/identify_req', 10)
+        self.sub_ident_rep = self.create_subscription(String, 'coven/identify_rep', self.on_ident_rep, 10)
 
-        self.sub_verify_req = self.create_subscription(String, 'coven/verify_req', self.on_verify_req, 10)
-        self.pub_verify_rep = self.create_publisher(String, 'coven/verify_rep', 10)
+        self.pub_verify_req = self.create_publisher(String, 'coven/verify_req', 10)
+        self.sub_verify_rep = self.create_subscription(String, 'coven/verify_rep', self.on_verify_rep, 10)
 
-        self.sub_enable_12v = self.create_subscription(String, 'coven/enable_12v', self.on_power, 10)
+        self.pub_enable_12v = self.create_publisher(String, 'coven/enable_12v', 10)
+        self.sub_hb = self.create_subscription(String, 'coven/heartbeat', self.on_hb, 10)
 
-        self.pub_hb = self.create_publisher(String, 'coven/heartbeat', 10)
+        self.sub_mission_req = self.create_subscription(String, 'coven/mission_req', self.on_mission_req, 10)
+        self.sub_task_ack = self.create_subscription(String, 'coven/task_ack', self.on_task_ack, 10)
+        self.sub_task_start = self.create_subscription(String, 'coven/task_start', self.on_task_start, 10)
+        self.sub_task_complete = self.create_subscription(String, 'coven/task_complete', self.on_task_complete, 10)
 
-        self.sub_task_req = self.create_subscription(String, 'coven/task_req', self.on_task_req, 10)
-        self.pub_task_ack = self.create_publisher(String, 'coven/task_ack', 10)
-        self.pub_task_start = self.create_publisher(String, 'coven/task_start', 10)
-        self.pub_task_complete = self.create_publisher(String, 'coven/task_complete', 10)
+        self.pub_task_req = self.create_publisher(String, 'coven/task_req', 10)
 
-        self.get_logger().info(f"Module {self.module_id} booted on 5V — waiting for IDENTIFY.")
+        self.ident_timer = self.create_timer(self.ident_period, self.broadcast_identify)
+        self.hb_timer = self.create_timer(0.5, self.flush_heartbeat_log)
+
+        self.get_logger().info(f"DockMulti initialized — ready to manage multiple modules (ident_period: {self.ident_period}s)")
 
     # ------------------------
     # IDENTIFY / VERIFY
     # ------------------------
-    def on_ident_req(self, msg: String):
-        if self.state != ModuleState.BOOT:
+    def broadcast_identify(self):
+        req = common.IdentifyReq(req_id="dock_broadcast")
+        self.pub_ident_req.publish(String(data=common.ident_req_encode(req)))
+        self.get_logger().info("Broadcast IDENTIFY_REQ dock_broadcast")
+
+    def on_ident_rep(self, msg: String):
+        rep = common.ident_rep_decode(msg)
+        if not rep:
             return
-        req = common.ident_req_decode(msg)
-        if not req:
+        self.get_logger().info(f"IDENTIFY_REP received from {rep.module_id}")
+        with self._mod_lock:
+            self.modules[rep.module_id] = {
+                "state": common.DockState.VERIFY,
+                "last_hb": self.get_clock().now().nanoseconds / 1e9,
+                "miss_count": 0,
+                "paused": False
+            }
+        verify = common.VerifyReq(module_id=rep.module_id)
+        self.pub_verify_req.publish(String(data=common.verify_req_encode(verify)))
+
+    def on_verify_rep(self, msg: String):
+        rep = common.verify_rep_decode(msg)
+        if not rep:
             return
-        self.get_logger().info("IDENTIFY_REQ received → responding with module ID")
-        rep = common.IdentifyRep(
-            req_id=req.req_id,
-            module_id=self.module_id,
-            module_type=self.module_type,
-            fw=self.fw
+        with self._mod_lock:
+            if rep.module_id not in self.modules:
+                return
+            if rep.ok:
+                self.modules[rep.module_id]["state"] = common.DockState.ENABLED
+            else:
+                self.modules[rep.module_id]["state"] = common.DockState.REJECTED
+        if rep.ok:
+            self.get_logger().info(f"VERIFY_REP OK for {rep.module_id} → enabling +12V")
+            self.pub_enable_12v.publish(
+                String(data=json.dumps({"module_id": rep.module_id, "data": True}))
+            )
+        else:
+            self.get_logger().warn(f"VERIFY_REP failed for {rep.module_id}: {rep.reason}")
+
+    # ------------------------
+    # HEARTBEAT MONITORING
+    # ------------------------
+    def on_hb(self, msg: String):
+        hb = common.hb_decode(msg)
+        if not hb:
+            return
+        with self._mod_lock:
+            mod = self.modules.get(hb.module_id)
+            if not mod:
+                return
+            was_missing = mod["miss_count"] > 0
+            mod["last_hb"] = self.get_clock().now().nanoseconds / 1e9
+            mod["miss_count"] = 0
+            self.live_hb.add(hb.module_id)
+        if was_missing:
+            self.get_logger().info(f"{COLOR_GREEN}Heartbeat recovered for {hb.module_id}{COLOR_RESET}")
+
+    def flush_heartbeat_log(self):
+        now = self.get_clock().now().nanoseconds / 1e9
+        with self._mod_lock:
+            live_snapshot = sorted(self.live_hb)
+            self.live_hb.clear()
+        if live_snapshot:
+            self.get_logger().info(f"{COLOR_GREEN}Heartbeat received for {', '.join(live_snapshot)}{COLOR_RESET}")
+        to_remove = []
+        with self._mod_lock:
+            for module_id, mod in self.modules.items():
+                if mod.get("paused"):
+                    continue
+                self._check_heartbeat(now, module_id, mod, to_remove)
+        for mid in to_remove:
+            self.modules.pop(mid, None)
+
+    def _check_heartbeat(self, now, module_id, mod, to_remove):
+        dt = now - mod["last_hb"]
+        missed = int((dt + self.hb_jitter) // self.hb_timeout)
+        if missed > mod["miss_count"]:
+            mod["miss_count"] = missed
+            if missed == 1:
+                self.get_logger().warn(f"{COLOR_YELLOW}Heartbeat missing ONCE for {module_id}{COLOR_RESET}")
+            elif missed == 2:
+                self.get_logger().warn(f"{COLOR_ORANGE}Heartbeat missing TWICE for {module_id}{COLOR_RESET}")
+            elif missed >= self.max_misses:
+                self.get_logger().error(f"{COLOR_RED}Heartbeat lost from {module_id}{COLOR_RESET}")
+                to_remove.append(module_id)
+
+    # ------------------------
+    # MISSION TASK FLOW
+    # ------------------------
+    def on_mission_req(self, msg: String):
+        req = common.mission_req_decode(msg)
+        if not req or not req.task:
+            self.get_logger().warn("Received invalid mission request.")
+            return
+        chosen = None
+        with self._mod_lock:
+            for module_id, mod in self.modules.items():
+                if mod["state"] == common.DockState.ENABLED and not mod["paused"]:
+                    chosen = module_id
+                    mod["paused"] = True
+                    break
+        if chosen:
+            task = common.TaskReq(module_id=chosen, task=req.task)
+            self.pub_task_req.publish(String(data=common.task_req_encode(task)))
+            self.get_logger().info(f"Assigned mission '{req.task}' to {chosen}")
+        else:
+            self.get_logger().warn("No available module to assign mission.")
+
+    def on_task_ack(self, msg: String):
+        ack = common.task_ack_decode(msg)
+        if not ack:
+            return
+        result = "ACCEPTED" if ack.accepted else f"REJECTED ({ack.reason})"
+        self.get_logger().info(f"TASK_ACK from {ack.module_id}: {result}")
+
+    def on_task_start(self, msg: String):
+        ts = common.task_start_decode(msg)
+        if not ts:
+            return
+        with self._mod_lock:
+            mod = self.modules.get(ts.module_id)
+            if mod:
+                mod["state"] = common.ModuleState.FIELD_OPS
+        self.get_logger().info(f"{COLOR_ORANGE}{ts.module_id} started FIELD_OPS: {ts.task}{COLOR_RESET}")
+
+    def on_task_complete(self, msg: String):
+        tc = common.task_complete_decode(msg)
+        if not tc:
+            return
+        with self._mod_lock:
+            mod = self.modules.get(tc.module_id)
+            if mod:
+                mod["paused"] = False
+                mod["state"] = common.DockState.ENABLED
+                mod["last_hb"] = self.get_clock().now().nanoseconds / 1e9
+                mod["miss_count"] = 0
+        result = "SUCCESS" if tc.success else "FAIL"
+
+        # Log metrics
+        metrics_str = ""
+        if tc.exploration_metrics:
+            metrics_str = (
+                f" | Coverage: {tc.exploration_metrics.get('coverage', 0):.1%}, "
+                f"Duration: {tc.exploration_metrics.get('duration', 0):.1f}s, "
+                f"Iterations: {tc.exploration_metrics.get('iterations', 0)}"
+            )
+
+        self.get_logger().info(
+            f"{COLOR_GREEN}TaskComplete from {tc.module_id}: {tc.task} → {result}{metrics_str}{COLOR_RESET}"
         )
-        self.pub_ident_rep.publish(String(data=common.ident_rep_encode(rep)))
-        self.state = ModuleState.WAIT_VERIFY
 
-    def on_verify_req(self, msg: String):
-        if self.state != ModuleState.WAIT_VERIFY:
-            return
-        req = common.verify_req_decode(msg)
-        if not req or req.module_id != self.module_id:
-            return
-        self.get_logger().info("VERIFY_REQ matched → replying OK")
-        rep = common.VerifyRep(module_id=self.module_id, ok=True, reason="")
-        self.pub_verify_rep.publish(String(data=common.verify_rep_encode(rep)))
+        # Save map data if present
+        if tc.map_data or tc.map_yaml:
+            self._save_map_data(tc)
 
-    # ------------------------
-    # POWER ENABLE
-    # ------------------------
-    def on_power(self, msg: String):
+    def _save_map_data(self, tc: common.TaskComplete):
+        """
+        Deserialize and save map data received from module.
+
+        Args:
+            tc: TaskComplete message containing map data
+        """
         try:
-            d = json.loads(msg.data)
-        except json.JSONDecodeError:
-            return
-        if d.get("module_id") != self.module_id:
-            return
-        if d.get("data") and self.state == ModuleState.WAIT_VERIFY:
-            self.state = ModuleState.NORMAL
-            self.get_logger().info("+12V enabled → entering NORMAL state")
-            self.start_heartbeat()
+            # Create timestamped directory for this mission
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            mission_dir = os.path.join(
+                self.map_storage_dir,
+                tc.module_id,
+                f"{tc.task}_{timestamp}"
+            )
+            os.makedirs(mission_dir, exist_ok=True)
 
-    # ------------------------
-    # HEARTBEAT
-    # ------------------------
-    def start_heartbeat(self):
-        if self.hb_timer:
-            return
-        self.hb_timer = self.create_timer(HB_PERIOD, self.send_heartbeat)
-        self.get_logger().info(f"Heartbeat started for {self.module_id}")
+            # Decode and decompress map data
+            if tc.map_data:
+                pgm_compressed = base64.b64decode(tc.map_data)
+                pgm_data = gzip.decompress(pgm_compressed)
 
-    def stop_heartbeat(self):
-        if self.hb_timer:
-            self.hb_timer.cancel()
-            self.hb_timer = None
-        self.get_logger().info(f"Heartbeat stopped for {self.module_id}")
+                pgm_file = os.path.join(mission_dir, "exploration_map.pgm")
+                with open(pgm_file, 'wb') as f:
+                    f.write(pgm_data)
 
-    def send_heartbeat(self):
-        self.seq += 1
-        hb = common.Heartbeat(module_id=self.module_id, seq=self.seq)
-        self.pub_hb.publish(String(data=common.hb_encode(hb)))
+                self.get_logger().info(f"Saved map PGM: {pgm_file} ({len(pgm_data)} bytes)")
 
-    # ------------------------
-    # TASK HANDLING
-    # ------------------------
-    def on_task_req(self, msg: String):
-        req = common.task_req_decode(msg)
-        if not req or req.module_id != self.module_id:
-            return
-        self.get_logger().info(f"TASK_REQ received: {req.task}")
-        ack = common.TaskAck(module_id=self.module_id, accepted=True)
-        self.pub_task_ack.publish(String(data=common.task_ack_encode(ack)))
-        self.get_logger().info("Accepted task → preparing to undock")
+            # Decode and decompress YAML metadata
+            if tc.map_yaml:
+                yaml_compressed = base64.b64decode(tc.map_yaml)
+                yaml_data = gzip.decompress(yaml_compressed)
 
-        threading.Thread(target=self.execute_task, args=(req.task,), daemon=True).start()
+                yaml_file = os.path.join(mission_dir, "exploration_map.yaml")
+                with open(yaml_file, 'wb') as f:
+                    f.write(yaml_data)
 
-    def execute_task(self, task_name):
-        # Stop heartbeat and emit task start
-        self.stop_heartbeat()
-        self.state = ModuleState.FIELD_OPS
-        ts = common.TaskStart(module_id=self.module_id, task=task_name)
-        self.pub_task_start.publish(String(data=common.task_start_encode(ts)))
-        self.get_logger().info(f"Executing FIELD_OPS for task: {task_name}")
+                self.get_logger().info(f"Saved map YAML: {yaml_file} ({len(yaml_data)} bytes)")
 
-        time.sleep(TASK_DELAY)
+            # Save exploration metrics as JSON
+            if tc.exploration_metrics:
+                metrics_file = os.path.join(mission_dir, "metrics.json")
+                with open(metrics_file, 'w') as f:
+                    json.dump({
+                        "module_id": tc.module_id,
+                        "task": tc.task,
+                        "timestamp": timestamp,
+                        "success": tc.success,
+                        "note": tc.note,
+                        "metrics": tc.exploration_metrics
+                    }, f, indent=2)
 
-        # Return and emit task complete
-        self.state = ModuleState.NORMAL
-        self.start_heartbeat()
-        tc = common.TaskComplete(module_id=self.module_id, task=task_name, success=True, note="Returned from task")
-        self.pub_task_complete.publish(String(data=common.task_complete_encode(tc)))
-        self.get_logger().info(f"Task {task_name} complete — rejoined dock")
+                self.get_logger().info(f"Saved metrics: {metrics_file}")
+
+            self.get_logger().info(
+                f"{COLOR_GREEN}Map data from {tc.module_id} saved to {mission_dir}{COLOR_RESET}"
+            )
+
+        except Exception as e:
+            self.get_logger().error(f"Failed to save map data: {e}")
+
 
 # ------------------------
 # --- Main ---
 # ------------------------
 def main():
     rclpy.init()
-    node = Module()
-    rclpy.spin(node)
-    node.destroy_node()
-    rclpy.shutdown()
+    node = Dock()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass  # Graceful shutdown on Ctrl+C
+    except Exception as e:
+        node.get_logger().error(f"Unexpected error: {e}")
+    finally:
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
