@@ -77,6 +77,7 @@ class Module(Node):
         self.declare_parameter('heartbeat_period', DEFAULT_HB_PERIOD)
         self.declare_parameter('task_timeout', DEFAULT_TASK_TIMEOUT)
         self.declare_parameter('map_storage_dir', DEFAULT_MAP_STORAGE_DIR)
+        self.declare_parameter('skip_health_check', False)  # For testing without hardware
 
         # Exploration parameters
         self.declare_parameter('exploration.frontier_radius', 3.0)
@@ -90,6 +91,7 @@ class Module(Node):
         self.hb_period = self.get_parameter('heartbeat_period').value
         self.task_timeout = self.get_parameter('task_timeout').value
         self.map_storage_dir = os.path.expanduser(self.get_parameter('map_storage_dir').value)
+        self.skip_health_check = self.get_parameter('skip_health_check').value
 
         self.module_id = module_id or f"RR-{str(uuid.uuid4())[:6]}"
         self.module_type = module_type
@@ -202,6 +204,11 @@ class Module(Node):
             - health_ok: True if all critical systems functional
             - reason: Empty string if OK, otherwise describes failure
         """
+        # Skip health check if parameter is set (for testing)
+        if self.skip_health_check:
+            self.get_logger().info("Health check skipped (skip_health_check=true)")
+            return True, ""
+
         # Check for lidar data (scan topic)
         scan_topic = f'{self.robot_namespace}/scan' if self.robot_namespace else '/scan'
         try:
