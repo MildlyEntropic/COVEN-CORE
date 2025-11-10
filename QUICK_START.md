@@ -1,197 +1,191 @@
 # COVEN Quick Start
 
+Get up and running with COVEN in minutes.
+
 ## Installation
 
+### First Time
 ```bash
 cd ~/ros2_ws
-./assemble.sh  # Clean build + source
+source /opt/ros/humble/setup.bash
+colcon build --symlink-install
+source install/setup.bash
+
+# Install global launcher
+chmod +x coven
+mkdir -p ~/.local/bin
+cp coven ~/.local/bin/assemble
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
+source ~/.bashrc
 ```
 
-## Launch Options
+Now `assemble` works from anywhere!
 
-### Basic Testing (1 Module)
+### Already Installed?
 ```bash
-./coven
+assemble build        # Rebuild if needed
+assemble test         # Run tests
 ```
-**Use for**: Testing core FSM, development, clear logs
 
-### Multi-Module Testing (N Modules)
+## Quick Test
+
 ```bash
-./coven -3   # 3 modules
-./coven -5   # 5 modules
-./coven -10  # 10 modules (stress test)
-```
-**Use for**: Swarm coordination, load testing, multi-agent demos
+# Interactive menu (easiest!)
+assemble
 
-### With Simulation
+# Or directly
+assemble test         # 54 tests in 36 seconds
+```
+
+## Launch System
+
+### Option 1: Interactive Menu
 ```bash
-./coven sim
+assemble              # Pick options from menu
 ```
-**Use for**: Testing with Create3 robot in Gazebo
 
-### With Navigation
+### Option 2: Direct Commands
+
+#### Terminal 1 - Dock
 ```bash
-./coven nav
+assemble dock
 ```
-**Use for**: SLAM + Nav2 testing (requires robot/sim already running)
 
-### Full Stack
+#### Terminal 2 - Module
 ```bash
-./coven full
+assemble module       # Auto ID
+# OR
+assemble module RR-001   # Specific ID
 ```
-**Use for**: Complete exploration missions (sim + nav + COVEN)
 
-## Testing Workflow
+#### Terminal 3 - Monitor
+```bash
+assemble monitor      # Pick topic to watch
+```
 
-### 1. Test Basic Connection (1 Module)
+## Common Tasks
+
+### Run Tests
+```bash
+assemble test         # Comprehensive (36s, 54 tests)
+assemble test-quick   # Quick sanity (3s, 38 tests)
+```
+
+### Build & Rebuild
+```bash
+assemble build        # Build workspace
+assemble rebuild      # Clean + build
+assemble clean        # Clean artifacts
+```
+
+### Debug
+```bash
+assemble logs         # View recent logs
+assemble version      # System info
+assemble monitor      # Watch topics
+```
+
+## Manual Testing
+
+### Test Discovery Protocol
+```bash
+# Terminal 1 - Start dock
+assemble dock
+
+# Terminal 2 - Start module
+assemble module TEST-001
+
+# Watch the logs:
+# [INFO] [dock]: Sending IDENTIFY_REQ...
+# [INFO] [module]: IDENTIFY_REQ received → responding
+# [INFO] [dock]: IDENTIFY_REP received from TEST-001
+# [WARN] [module]: VERIFY_REQ → replying FAIL (no hardware)
+# [INFO] [module]: Heartbeat started for TEST-001
+```
+
+### Test Heartbeats
 ```bash
 # Terminal 1
-./coven
+assemble dock
 
-# Terminal 2 - Watch heartbeat
+# Terminal 2
+assemble module
+
+# Terminal 3 - Watch heartbeats
 ros2 topic echo /coven/heartbeat
 
-# Terminal 3 - Send test mission
-ros2 topic pub --once /coven/mission_req std_msgs/String \
-  '{data: "{\"task\": \"test\"}"}'
+# You should see:
+# module_id: "..."
+# seq: 1
+# timestamp_sec: ...
+# status: "ready"
 ```
 
-### 2. Test Multi-Module Coordination (3 Modules)
+### Test Multi-Module
 ```bash
 # Terminal 1
-./coven -3
+assemble dock
 
-# Terminal 2 - Watch all heartbeats
+# Terminal 2, 3, 4 - Start 3 modules
+assemble module RR-001
+assemble module RR-002
+assemble module RR-003
+
+# Terminal 5 - Monitor
 ros2 topic echo /coven/heartbeat
 
-# Terminal 3 - Send multiple missions
-for i in {1..3}; do
-  ros2 topic pub --once /coven/mission_req std_msgs/String \
-    "{data: \"{\\\"task\\\": \\\"mission_$i\\\"}\"}"
-  sleep 1
-done
+# Watch 3 different modules reporting!
 ```
 
-### 3. Test Exploration Mission (Full Stack)
+## Development Workflow
+
 ```bash
-# Terminal 1
-./coven full
+# 1. Edit code in your IDE
 
-# Wait for everything to initialize (~30 seconds)
+# 2. Quick test
+assemble test-quick    # 3 seconds
 
-# Terminal 2 - Send exploration mission
-ros2 topic pub --once /coven/mission_req std_msgs/String \
-  '{data: "{\"task\": \"explore_warehouse\"}"}'
+# 3. If passes, full test
+assemble test          # 36 seconds
 
-# Terminal 3 - Monitor completion
-ros2 topic echo /coven/task_complete
+# 4. All green? Commit!
 ```
-
-## Monitoring
-
-### Watch All COVEN Topics
-```bash
-ros2 topic list | grep coven
-```
-
-### Watch Connection Process
-```bash
-ros2 topic echo /coven/identify_req   # Dock broadcasts
-ros2 topic echo /coven/identify_rep   # Module responds
-ros2 topic echo /coven/verify_req     # Dock verifies
-ros2 topic echo /coven/verify_rep     # Module confirms
-```
-
-### Watch Task Execution
-```bash
-ros2 topic echo /coven/task_start     # Task begins
-ros2 topic echo /coven/task_complete  # Task done + map data
-```
-
-### Check Node Status
-```bash
-ros2 node list                # All running nodes
-ros2 node info /coven_dock    # Dock details
-ros2 topic hz /coven/heartbeat  # Heartbeat rate
-```
-
-## Common Scenarios
-
-### Development
-```bash
-./coven           # Start simple
-# Edit code
-./assemble.sh     # Rebuild
-./coven -2        # Test with 2 modules
-```
-
-### Demo
-```bash
-./coven -5        # Launch 5 modules
-# Show swarm connecting, heartbeating, task distribution
-```
-
-### Research
-```bash
-./coven -10       # Launch 10 modules
-# Study emergent behaviors, task allocation
-```
-
-### Integration Testing
-```bash
-./coven full      # Full stack
-# Test navigation, SLAM, map transfer end-to-end
-```
-
-## Stopping
-
-Press **Ctrl+C** in the terminal running `./coven` - it will cleanly stop all nodes (dock + all modules).
 
 ## Troubleshooting
 
-### "Package not found"
+### Command not found: assemble
 ```bash
+# Reload shell
+source ~/.bashrc
+
+# Or use local version
 cd ~/ros2_ws
-./assemble.sh
+./coven test
 ```
 
-### "No heartbeat received"
-- Check `ros2 node list` - is dock running?
-- Check `ros2 topic list | grep coven` - are topics present?
-- Increase IDENTIFY broadcast rate in [dock_node_multi.py](coven_core/dock_node_multi.py#L50)
+### Tests fail: Module import errors
+```bash
+assemble rebuild
+```
 
-### "Navigation failed"
-- Ensure `./coven full` (not just `./coven`)
-- Check Nav2 nodes: `ros2 node list | grep nav`
-- View costmap: `ros2 run nav2_costmap_2d nav2_costmap_2d_markers`
+### Tests fail: pytest not found
+```bash
+sudo apt install python3-pytest
+```
 
-### "Map data not saved"
-- Check `~/coven_maps/` directory exists
-- Module must complete exploration before dock saves map
-- Check logs for "Map data from RR-xxxxx saved"
+### Health check failures
+This is **expected** without hardware! The tests use `skip_health_check=true` automatically.
 
-## File Locations
-
-- **Launch script**: `/home/ander/ros2_ws/coven`
-- **Package source**: `/home/ander/ros2_ws/src/coven_core/`
-- **Map storage**: `~/coven_maps/`
-- **Build output**: `/home/ander/ros2_ws/install/coven_core/`
-
-## Documentation
-
-- [MULTI_MODULE.md](MULTI_MODULE.md) - Multi-module testing guide
-- [EXPLORATION.md](EXPLORATION.md) - Exploration system details
-- [VIEWING_LOGS.md](VIEWING_LOGS.md) - Log monitoring tips
-- [LAUNCHER.md](LAUNCHER.md) - Detailed launcher usage
-- [TROUBLESHOOTING.md](TROUBLESHOOTING.md) - Common issues
+### Need more help?
+See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) or [ASSEMBLE_GUIDE.md](../../ASSEMBLE_GUIDE.md)
 
 ## Next Steps
 
-1. **Test basic FSM**: `./coven` - verify connection, heartbeat, task execution
-2. **Test multi-module**: `./coven -3` - verify multiple modules connect and distribute tasks
-3. **Test navigation**: `./coven full` - verify exploration missions work end-to-end
-4. **Integrate your missions**: Modify [module_node.py](coven_core/module_node.py) to add custom task types
+- **Run tests**: `assemble test` (36s, proves everything works)
+- **Read docs**: [TEST_ME.md](../../TEST_ME.md) (detailed test guide)
+- **Learn testing**: [RIGOROUS_TESTING.md](../../RIGOROUS_TESTING.md) (why tests are rigorous)
+- **Full commands**: [ASSEMBLE_GUIDE.md](../../ASSEMBLE_GUIDE.md) (complete reference)
 
 ---
 
-**TL;DR**: Use `./coven` for basic testing, `./coven -N` for multi-module testing, `./coven full` for complete exploration missions. Press Ctrl+C to stop. Check [MULTI_MODULE.md](MULTI_MODULE.md) for detailed examples.
+**Quick Start:** `assemble` (that's it!)
