@@ -1,401 +1,221 @@
-# COVEN-CORE
+# COVEN
 
-**COVEN** (Composable Operations for Versatile Exploration Networks) is a ROS2-based modular robotics framework enabling autonomous dock-and-rover swarms with hot-pluggable modules and standardized interfaces.
+**Composable Operations for Versatile Exploration Networks**
 
-**Phase 1** validates plug-level lifecycle logic (*connect, verify, operate, return*) in simulation before hardware fabrication.
+A multi-robot coordination system for ROS2. Manages autonomous modules with dynamic task assignment, health monitoring, and hot-swap capability.
 
 ---
 
-## ⚡ Quick Start
+## What It Does
 
-### Ultra-Simple (5 seconds)
+- **Dock-Module Architecture** - Central dock coordinates multiple robot modules
+- **Automatic Discovery** - Modules register themselves on startup
+- **Health Monitoring** - Heartbeat-based status tracking (1.25 Hz)
+- **Task Assignment** - Dynamic mission distribution to available modules
+- **State Machine** - BOOT → IDENTIFY → VERIFY → NORMAL → FIELD_OPS
+
+Built for warehouse automation, exploration missions, and multi-robot research.
+
+---
+
+## Quick Start
+
+### Build
 
 ```bash
 cd ~/ros2_ws
-./coven
-```
-
-That's it! COVEN dock + module running, no dependencies.
-
-### With Exploration
-
-```bash
-cd ~/ros2_ws
-./coven full
-```
-
-Wait 15 seconds, then send a mission:
-```bash
-ros2 topic pub --once /coven/mission_req std_msgs/String \
-  '{data: "{\"task\": \"explore_warehouse\"}"}'
-```
-
-Watch the robot explore, build a map, return to dock, and transfer data!
-
----
-
-## 🎯 What COVEN Does
-
-### Core Features
-- **Hot-dockable modules** - Connect/disconnect at runtime
-- **FSM-based lifecycle** - BOOT → IDENTIFY → VERIFY → NORMAL → FIELD_OPS
-- **Heartbeat monitoring** - 3-miss threshold with recovery
-- **Multi-module support** - Dock manages multiple rovers concurrently
-- **Autonomous exploration** - Frontier-based navigation with SLAM
-- **Map data transfer** - Compressed occupancy grids to dock
-- **Hardware-agnostic** - Works with any robot providing `/cmd_vel`, `/scan`, `/odom`
-
-### Use Cases
-- Research swarm coordination
-- Modular robot development
-- Autonomous exploration
-- Multi-agent task allocation
-- Hot-swappable sensor platforms
-
----
-
-## 🚀 Launch Modes
-
-```bash
-./coven           # Basic: dock + module only
-./coven sim       # Add simulation
-./coven nav       # Add navigation
-./coven full      # Everything (sim + nav + COVEN)
-./coven help      # Show usage
-```
-
-### Basic Mode (Default)
-- No simulation
-- No navigation
-- Just COVEN FSM
-- **Perfect for:** Testing communication, developing behaviors
-
-### Sim Mode
-- Create3 Gazebo simulation
-- COVEN dock + module
-- **Perfect for:** Testing with robot dynamics
-
-### Nav Mode
-- SLAM + Nav2 stack
-- COVEN dock + module
-- **Perfect for:** Real hardware testing
-
-### Full Mode
-- Simulation + Navigation + COVEN
-- **Perfect for:** Complete exploration missions
-
----
-
-## 📊 System Architecture
-
-```
-┌─────────────────────────────────────────┐
-│  OPERATOR                               │
-│  ./coven full                           │
-└─────────────────┬───────────────────────┘
-                  │
-┌─────────────────▼───────────────────────┐
-│  COVEN CORE (always included)           │
-│  ┌────────────┐     ┌─────────────────┐ │
-│  │ DockMulti  │◄────┤ Module(s)       │ │
-│  │ Hub        │     │ - FSM lifecycle  │ │
-│  │            │     │ - Heartbeat      │ │
-│  │            │     │ - Task execution │ │
-│  └────────────┘     └─────────────────┘ │
-└─────────────────────────────────────────┘
-                  │
-┌─────────────────▼───────────────────────┐
-│  NAVIGATION (optional - with_nav)       │
-│  - SLAM Toolbox (mapping)               │
-│  - Nav2 (planning/control)              │
-│  - Frontier exploration                 │
-└─────────────────────────────────────────┘
-                  │
-┌─────────────────▼───────────────────────┐
-│  SIMULATION (optional - with_sim)       │
-│  - Create3 Gazebo                       │
-│  - Physics engine                       │
-│  - Sensor simulation                    │
-└─────────────────────────────────────────┘
-```
-
----
-
-## 📡 Communication Protocol
-
-### COVEN Topics
-
-**Connection Lifecycle:**
-- `/coven/identify_req` - Dock broadcasts discovery (5s interval)
-- `/coven/identify_rep` - Module responds with ID/type/firmware
-- `/coven/verify_req` - Dock requests verification
-- `/coven/verify_rep` - Module confirms verification
-- `/coven/enable_12v` - Dock enables module power
-
-**Runtime:**
-- `/coven/heartbeat` - Module health (0.8s interval)
-
-**Task Management:**
-- `/coven/mission_req` - High-level mission commands
-- `/coven/task_req` - Task assignment to specific module
-- `/coven/task_ack` - Module accepts/rejects task
-- `/coven/task_start` - Module begins field operations
-- `/coven/task_complete` - Module completes (includes map data)
-
-### Message Format
-
-All messages use JSON-encoded `std_msgs/String` for flexibility:
-
-```json
-{
-  "module_id": "RR-a3b4c5",
-  "task": "explore_warehouse",
-  "success": true,
-  "map_data": "<base64-encoded-gzipped-pgm>",
-  "map_yaml": "<base64-encoded-gzipped-yaml>",
-  "exploration_metrics": {
-    "duration": 247.3,
-    "coverage": 0.785,
-    "iterations": 12,
-    "distance_traveled": 45.2
-  }
-}
-```
-
----
-
-## 🗺️ Exploration Missions
-
-### Send a Mission
-
-```bash
-ros2 topic pub --once /coven/mission_req std_msgs/String \
-  '{data: "{\"task\": \"explore_warehouse\"}"}'
-```
-
-### What Happens
-
-1. Dock assigns task to available module
-2. Module initializes Nav2 + SLAM
-3. Module stores dock position
-4. Module explores using frontier-based navigation
-5. SLAM builds occupancy grid map
-6. Module returns to dock coordinates
-7. Module saves and compresses map
-8. Module transmits map data to dock
-9. Dock stores map files + metrics
-
-### View Results
-
-```bash
-ls -R ~/coven_maps/
-cat ~/coven_maps/*/*/metrics.json | jq
-```
-
-**Map Storage:**
-```
-~/coven_maps/
-└── RR-a3b4c5/
-    └── explore_warehouse_20251029_143022/
-        ├── exploration_map.pgm    # Occupancy grid
-        ├── exploration_map.yaml   # Metadata
-        └── metrics.json           # Statistics
-```
-
----
-
-## 🛠️ Dependencies
-
-### Core COVEN (minimal)
-```bash
-sudo apt install ros-jazzy-rclpy ros-jazzy-std-msgs
-```
-
-### For Exploration (optional)
-```bash
-sudo apt install \
-  ros-jazzy-nav2-simple-commander \
-  ros-jazzy-nav2-controller \
-  ros-jazzy-nav2-planner \
-  ros-jazzy-nav2-behaviors \
-  ros-jazzy-nav2-bt-navigator \
-  ros-jazzy-slam-toolbox
-
-pip install numpy scipy
-```
-
-### For Simulation (optional)
-```bash
-sudo apt install \
-  ros-jazzy-irobot-create-gz-bringup \
-  ros-jazzy-ros-gz-bridge
-```
-
----
-
-## 📖 Documentation
-
-- **[LAUNCHER.md](LAUNCHER.md)** - Detailed launcher usage
-- **[SIMPLE_APPROACH.md](SIMPLE_APPROACH.md)** - Architecture philosophy
-- **[EXPLORATION.md](EXPLORATION.md)** - Exploration system guide
-- **[TROUBLESHOOTING.md](TROUBLESHOOTING.md)** - Common issues
-- **[README_DEV.md](README_DEV.md)** - Developer guide
-
----
-
-## 🧪 Testing
-
-### Level 1: Basic FSM
-```bash
-./coven
-# Send test mission
-ros2 topic pub --once /coven/mission_req std_msgs/String \
-  '{data: "{\"task\": \"test\"}"}'
-```
-**Validates:** Connection, heartbeat, task execution
-
-### Level 2: With Simulation
-```bash
-./coven sim
-```
-**Validates:** Robot integration, sensor data
-
-### Level 3: Full Exploration
-```bash
-./coven full
-# Wait 15s, then:
-ros2 topic pub --once /coven/mission_req std_msgs/String \
-  '{data: "{\"task\": \"explore_warehouse\"}"}'
-```
-**Validates:** Navigation, SLAM, map transfer
-
----
-
-## 🔧 Configuration
-
-### Navigation Parameters
-**File:** `config/nav2_simple.yaml`
-
-Key settings:
-- Robot radius: 0.22m
-- Max velocity: 0.5 m/s
-- Costmap resolution: 0.05m
-
-### SLAM Parameters
-**File:** `config/slam_simple.yaml`
-
-Key settings:
-- Map resolution: 0.05m
-- Update interval: 1.0s
-- Loop closure: enabled
-
-### Exploration Parameters
-**File:** `coven_core/exploration.py`
-
-```python
-EXPLORATION_TIMEOUT = 300.0    # seconds
-COVERAGE_THRESHOLD = 0.80      # 80%
-FRONTIER_SEARCH_RADIUS = 3.0   # meters
-MIN_FRONTIER_SIZE = 10         # cells
-```
-
----
-
-## 🏗️ Building
-
-```bash
-cd ~/ros2_ws
+source /opt/ros/humble/setup.bash
 colcon build --packages-select coven_core --symlink-install
 source install/setup.bash
 ```
 
+### Run
+
+Terminal 1 - Dock:
+```bash
+ros2 run coven_core dock
+```
+
+Terminal 2 - Module:
+```bash
+ros2 run coven_core module --ros-args -p skip_health_check:=true
+```
+
+Watch the discovery sequence in the logs. Module will identify itself and start sending heartbeats.
+
 ---
 
-## 🎓 Module Development
+## Architecture
 
-### Create a Custom Module
+```
+        ┌──────────────┐
+        │     DOCK     │  ← Discovers modules, assigns tasks
+        └──────┬───────┘
+               │
+        ROS2 /coven/* topics
+               │
+    ┌──────────┼──────────┐
+    │          │          │
+┌───▼────┐ ┌──▼─────┐ ┌──▼─────┐
+│Module 1│ │Module 2│ │Module N│  ← Auto-register, report health, execute tasks
+└────────┘ └────────┘ └────────┘
+```
+
+### State Flow
+
+```
+BOOT
+  ↓ (receives IDENTIFY_REQ)
+IDENTIFY
+  ↓ (sends IDENTIFY_REP)
+WAIT_VERIFY
+  ↓ (receives VERIFY_REQ, responds VERIFY_REP)
+  ↓ (receives POWER_ENABLE)
+NORMAL
+  ↓ (heartbeats at 1.25 Hz)
+  ↓ (receives TASK_REQ)
+FIELD_OPS
+  ↓ (executes mission)
+  ↓ (sends TASK_COMPLETE)
+NORMAL
+```
+
+### Topics
+
+**Discovery:**
+- `/coven/identify_req` - Dock requests module IDs
+- `/coven/identify_rep` - Modules respond with ID/type
+- `/coven/verify_req` - Dock requests health check
+- `/coven/verify_rep` - Modules report sensor status
+- `/coven/enable_12v` - Dock enables module power
+
+**Operations:**
+- `/coven/heartbeat` - Module status (0.8s interval)
+- `/coven/task_req` - Task assignment
+- `/coven/task_ack` - Task acknowledgment
+- `/coven/task_complete` - Task completion
+
+All messages are JSON-encoded `std_msgs/String` for flexibility.
+
+---
+
+## Dependencies
+
+### Core (Required)
+```bash
+sudo apt install ros-humble-desktop python3-pytest
+```
+
+### Optional (For autonomous navigation)
+```bash
+sudo apt install \
+  ros-humble-nav2-bringup \
+  ros-humble-slam-toolbox
+```
+
+---
+
+## Testing
+
+Run the test suite:
+```bash
+cd ~/ros2_ws
+source install/setup.bash
+python3 -m pytest src/coven_core/test/ -v
+```
+
+Tests validate:
+- Message encoding/decoding
+- State machine transitions
+- Discovery protocol
+- Heartbeat timing
+- Multi-module coordination
+
+---
+
+## Configuration
+
+Key parameters (in module node):
+
+```python
+HB_PERIOD = 0.8          # Heartbeat interval (seconds)
+HB_MISS_THRESHOLD = 3    # Heartbeats before timeout
+IDENTIFY_INTERVAL = 5.0  # Discovery broadcast interval
+```
+
+To run with hardware health checks enabled, omit `skip_health_check`:
+```bash
+ros2 run coven_core module
+```
+
+Module will verify lidar (`/scan`) and navigation stack before going operational.
+
+---
+
+## Development
+
+### Project Structure
+
+```
+coven_core/
+├── coven_core/
+│   ├── dock_node.py       # Dock coordination
+│   ├── module_node.py     # Module FSM and task execution
+│   ├── common.py          # Protocol definitions
+│   └── exploration.py     # Autonomous navigation (optional)
+└── test/
+    ├── test_rigorous_integration.py   # Performance tests
+    ├── test_protocol_validation.py    # Protocol tests
+    ├── test_common.py                 # Message encoding tests
+    └── test_fsm_transitions.py        # State machine tests
+```
+
+### Custom Modules
+
+Extend `Module` class:
 
 ```python
 from coven_core.module_node import Module
 
-class MyModule(Module):
+class CustomModule(Module):
     def __init__(self):
-        super().__init__(
-            module_id="MM-custom",
-            module_type="MyModule",
-            fw="1.0.0"
-        )
+        super().__init__(module_id="CM-001", module_type="Custom")
 
-    def execute_task(self, task_name):
-        # Your custom behavior
+    def execute_task(self, task_data):
+        # Your mission logic here
         pass
 ```
 
-### Add New Mission Types
+---
 
-Edit `module_node.py`:
+## Status
 
-```python
-if "explore" in task_name.lower():
-    # Exploration behavior
-elif "patrol" in task_name.lower():
-    # Your patrol behavior
-elif "survey" in task_name.lower():
-    # Your survey behavior
-```
+**Production-Ready:**
+- ✅ Multi-module coordination (tested with 5 concurrent modules)
+- ✅ Discovery and registration (<5ms latency)
+- ✅ Heartbeat monitoring (1.23 Hz measured)
+- ✅ Task assignment protocol
+- ✅ State machine transitions
+
+**In Development:**
+- Navigation integration (Nav2 issues being resolved)
+- Hardware docking mechanism
 
 ---
 
-## 🔬 Research & Hardware
-
-### Phase 1 (Current): Simulation Validation
-- ✅ FSM lifecycle logic
-- ✅ Multi-module coordination
-- ✅ Autonomous exploration
-- ✅ Map data transfer
-
-### Phase 2 (Future): Hardware Integration
-- 🔄 CubeRover fabrication (100×100×50mm)
-- 🔄 9-pin hot-dock connector
-- 🔄 IR beacon auto-docking
-- 🔄 Multi-rover field testing
-
----
-
-## 📊 Performance
-
-**Typical Warehouse Exploration (100m²):**
-- Duration: 3-5 minutes
-- Coverage: 70-85%
-- Iterations: 8-15 waypoints
-- Map size: 200-400 KB (compressed)
-- Distance: 40-60 meters
-
----
-
-## 🤝 Contributing
-
-COVEN is research code from University of Hawaii / Colorado School of Mines.
-
-**Maintainer:** Alexander Shultis (shultis@hawaii.edu)
-
----
-
-## 📜 License
+## License
 
 MIT License - See LICENSE file
 
 ---
 
-## 🙏 Acknowledgments
+## Author
 
-- **ROS2** - Robot Operating System
-- **Nav2** - Navigation framework
-- **SLAM Toolbox** - Mapping system
-- **iRobot Create3** - Robot platform base
+Alexander Shultis
+University of Hawaiʻi at Mānoa
+Department of Astronomy
+November 2025
 
 ---
 
-**Built with:** ROS2 Jazzy | Python 3 | Nav2 | SLAM Toolbox
-**Status:** Phase 1 - Simulation Validated ✅
-**Next:** Hardware Fabrication & Field Testing
+**ROS2 Humble | Python 3.10+**
