@@ -26,7 +26,7 @@ from coven_core.common import (
     ident_req_encode, ident_req_decode,
     ident_rep_encode, ident_rep_decode,
     verify_req_encode, verify_rep_encode,
-    heartbeat_encode, heartbeat_decode,
+    hb_encode, hb_decode,
     task_req_encode, task_ack_decode
 )
 

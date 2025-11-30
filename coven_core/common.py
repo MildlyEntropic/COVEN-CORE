@@ -160,6 +160,29 @@ class TaskComplete:
 
 
 # ------------------------
+# --- Bidding System ---
+# ------------------------
+@dataclass
+class BidNotice:
+    """Dock broadcasts this to solicit bids from available modules."""
+
+    task_id: str       # Unique ID for this task auction
+    task: str          # Task description (e.g., "explore_zone_a")
+    deadline: float    # Seconds to respond with bid
+
+
+@dataclass
+class BidProposal:
+    """Module response to a BidNotice with cost estimate."""
+
+    task_id: str       # Must match BidNotice.task_id
+    module_id: str     # Bidding module
+    cost: float        # Lower = better (battery, idle time, distance, etc.)
+    can_execute: bool  # False if module cannot execute this task
+    reason: str = ""   # Explanation if can_execute is False
+
+
+# ------------------------
 # --- Encode / Decode ---
 # ------------------------
 
@@ -370,4 +393,58 @@ def task_complete_decode(msg: String):
         return None
     except Exception as e:
         logger.error(f"Unexpected error decoding TaskComplete: {e}")
+        return None
+
+
+# BID_NOTICE
+def bid_notice_encode(bn: BidNotice) -> str:
+    return json.dumps({
+        "task_id": bn.task_id,
+        "task": bn.task,
+        "deadline": bn.deadline
+    })
+
+def bid_notice_decode(msg: String):
+    try:
+        d = json.loads(msg.data)
+        return BidNotice(
+            task_id=d.get("task_id", ""),
+            task=d.get("task", ""),
+            deadline=float(d.get("deadline", 2.0))
+        )
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to decode BidNotice: {e}")
+        logger.debug(f"Malformed data: {msg.data[:100]}...")
+        return None
+    except Exception as e:
+        logger.error(f"Unexpected error decoding BidNotice: {e}")
+        return None
+
+
+# BID_PROPOSAL
+def bid_proposal_encode(bp: BidProposal) -> str:
+    return json.dumps({
+        "task_id": bp.task_id,
+        "module_id": bp.module_id,
+        "cost": bp.cost,
+        "can_execute": bp.can_execute,
+        "reason": bp.reason
+    })
+
+def bid_proposal_decode(msg: String):
+    try:
+        d = json.loads(msg.data)
+        return BidProposal(
+            task_id=d.get("task_id", ""),
+            module_id=d.get("module_id", ""),
+            cost=float(d.get("cost", 999.0)),
+            can_execute=bool(d.get("can_execute", False)),
+            reason=d.get("reason", "")
+        )
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to decode BidProposal: {e}")
+        logger.debug(f"Malformed data: {msg.data[:100]}...")
+        return None
+    except Exception as e:
+        logger.error(f"Unexpected error decoding BidProposal: {e}")
         return None

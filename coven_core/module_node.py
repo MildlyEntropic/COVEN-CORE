@@ -50,7 +50,7 @@ from coven_interfaces.action import ExecuteTask
 
 # --- Local (COVEN) ---
 import coven_core.common as common
-from coven_core.common import ModuleState
+from coven_core.common import ModuleState, BidNotice, BidProposal
 from coven_core.exploration import Explorer
 
 
@@ -137,6 +137,11 @@ class Module(Node):
         self.pub_task_ack = self.create_publisher(String, 'coven/task_ack', 10)
         self.pub_task_start = self.create_publisher(String, 'coven/task_start', 10)
         self.pub_task_complete = self.create_publisher(String, 'coven/task_complete', 10)
+
+        # Bidding system
+        self.sub_bid_notice = self.create_subscription(String, 'coven/bid_notice', self.on_bid_notice, 10)
+        self.pub_bid_proposal = self.create_publisher(String, 'coven/bid_proposal', 10)
+        self.last_task_complete_time = time.time()  # Track idle time for cost calculation
 
         # Action server for task execution (modern alternative to topic-based approach)
         # Replace hyphens with underscores for valid topic name
@@ -261,6 +266,87 @@ class Module(Node):
         self.seq += 1
         hb = common.Heartbeat(module_id=self.module_id, seq=self.seq)
         self.pub_hb.publish(String(data=common.hb_encode(hb)))
+
+    # ------------------------
+    # BIDDING SYSTEM
+    # ------------------------
+    def on_bid_notice(self, msg: String):
+        """Handle incoming bid notice from dock - calculate cost and respond."""
+        notice = common.bid_notice_decode(msg)
+        if not notice:
+            return
+
+        # Only bid if we're in NORMAL state and available
+        can_execute = True
+        reason = ""
+
+        if self.state != ModuleState.NORMAL:
+            can_execute = False
+            reason = f"Module not in NORMAL state (current: {self.state.name})"
+
+        # Calculate bid cost (lower is better)
+        cost = self._calculate_bid_cost(notice.task)
+
+        # Create and send proposal
+        proposal = BidProposal(
+            task_id=notice.task_id,
+            module_id=self.module_id,
+            cost=cost,
+            can_execute=can_execute,
+            reason=reason
+        )
+
+        self.pub_bid_proposal.publish(String(data=common.bid_proposal_encode(proposal)))
+
+        if can_execute:
+            self.get_logger().info(
+                f"Submitted bid for '{notice.task}' (task_id: {notice.task_id}, cost: {cost:.2f})"
+            )
+        else:
+            self.get_logger().info(
+                f"Declined bid for '{notice.task}': {reason}"
+            )
+
+    def _calculate_bid_cost(self, task: str) -> float:
+        """
+        Calculate bid cost for a task. Lower cost = higher priority.
+
+        Factors considered:
+        - Idle time (longer idle = lower cost, prefer to use idle modules)
+        - Battery level (higher battery = lower cost)
+        - Task type compatibility (future: different modules good at different tasks)
+
+        Returns:
+            float: Cost value (lower is better, typically 0-100 range)
+        """
+        cost = 50.0  # Base cost
+
+        # Factor 1: Idle time bonus (up to -20 points for being idle 5+ minutes)
+        idle_time = time.time() - self.last_task_complete_time
+        idle_bonus = min(idle_time / 60.0, 5.0) * 4.0  # Max 20 point reduction
+        cost -= idle_bonus
+
+        # Factor 2: Battery penalty (add cost if battery is low)
+        # For now, simulated hardware always returns 100% - this will matter with real hardware
+        try:
+            # Try to use hardware interface if available
+            from coven_core.simulated_hardware import SimulatedHardware
+            hw = SimulatedHardware()
+            battery_pct = hw.get_battery_percentage()
+            # Add 0-30 points penalty for low battery (100% = 0 penalty, 0% = 30 penalty)
+            battery_penalty = (1.0 - battery_pct) * 30.0
+            cost += battery_penalty
+        except Exception:
+            pass  # No hardware interface, skip battery factor
+
+        # Factor 3: Task type preference (future enhancement)
+        # Could add bonuses for modules that specialize in certain tasks
+        # e.g., if "explore" in task.lower() and self.module_type == "ReconRover": cost -= 10
+
+        # Ensure cost stays positive
+        cost = max(0.1, cost)
+
+        return cost
 
     # ------------------------
     # TASK WATCHDOG
@@ -408,6 +494,7 @@ class Module(Node):
             # Return and emit task complete
             self.state = ModuleState.NORMAL
             self.start_heartbeat()
+            self.last_task_complete_time = time.time()  # Update for bid cost calculation
 
             tc = common.TaskComplete(
                 module_id=self.module_id,
@@ -598,6 +685,7 @@ class Module(Node):
         self._stop_task_watchdog()
         self.state = ModuleState.NORMAL
         self.start_heartbeat()
+        self.last_task_complete_time = time.time()  # Update for bid cost calculation
         self._current_goal_handle = None
         self._cancel_requested = False
 

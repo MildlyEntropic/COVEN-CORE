@@ -25,6 +25,7 @@ import gzip
 import json
 import os
 import threading
+import uuid
 from datetime import datetime
 
 # --- Third-party (ROS2) ---
@@ -35,7 +36,8 @@ from std_msgs.msg import String
 # --- Local (COVEN) ---
 import coven_core.common as common
 from coven_core.common import (
-    COLOR_GREEN, COLOR_YELLOW, COLOR_ORANGE, COLOR_RED, COLOR_RESET
+    COLOR_GREEN, COLOR_YELLOW, COLOR_ORANGE, COLOR_RED, COLOR_RESET,
+    BidNotice, BidProposal
 )
 
 # ------------------------
@@ -48,6 +50,7 @@ DEFAULT_HB_TIMEOUT   = 1.0    # expected heartbeat interval
 DEFAULT_MAX_MISSES   = 3      # after 3 misses, mark module as dropped
 DEFAULT_HB_JITTER    = 0.15   # jitter margin
 DEFAULT_MAP_STORAGE_DIR = '~/coven_maps'  # map storage location
+DEFAULT_BID_DEADLINE = 2.0    # seconds to wait for bids
 
 
 # ------------------------
@@ -65,16 +68,22 @@ class Dock(Node):
         self.declare_parameter('heartbeat_jitter', DEFAULT_HB_JITTER)
         self.declare_parameter('max_heartbeat_misses', DEFAULT_MAX_MISSES)
         self.declare_parameter('map_storage_dir', DEFAULT_MAP_STORAGE_DIR)
+        self.declare_parameter('bid_deadline', DEFAULT_BID_DEADLINE)
 
         # Get parameter values
         self.ident_period = self.get_parameter('identify_period').value
         self.hb_timeout = self.get_parameter('heartbeat_timeout').value
         self.hb_jitter = self.get_parameter('heartbeat_jitter').value
         self.max_misses = int(self.get_parameter('max_heartbeat_misses').value)
+        self.bid_deadline = self.get_parameter('bid_deadline').value
 
         self.modules = {}  # module_id → {state, last_hb, miss_count, paused}
         self.live_hb = set()
         self._mod_lock = threading.Lock()
+
+        # Bidding system state
+        self.pending_auctions = {}  # task_id → {task, bids: [], deadline_timer, start_time}
+        self._auction_lock = threading.Lock()
 
         # Map storage directory (from parameter)
         self.map_storage_dir = os.path.expanduser(self.get_parameter('map_storage_dir').value)
@@ -97,10 +106,14 @@ class Dock(Node):
 
         self.pub_task_req = self.create_publisher(String, 'coven/task_req', 10)
 
+        # Bidding system topics
+        self.pub_bid_notice = self.create_publisher(String, 'coven/bid_notice', 10)
+        self.sub_bid_proposal = self.create_subscription(String, 'coven/bid_proposal', self.on_bid_proposal, 10)
+
         self.ident_timer = self.create_timer(self.ident_period, self.broadcast_identify)
         self.hb_timer = self.create_timer(0.5, self.flush_heartbeat_log)
 
-        self.get_logger().info(f"DockMulti initialized — ready to manage multiple modules (ident_period: {self.ident_period}s)")
+        self.get_logger().info(f"DockMulti initialized — ready to manage multiple modules (ident_period: {self.ident_period}s, bid_deadline: {self.bid_deadline}s)")
 
     # ------------------------
     # IDENTIFY / VERIFY
@@ -192,26 +205,116 @@ class Dock(Node):
                 to_remove.append(module_id)
 
     # ------------------------
-    # MISSION TASK FLOW
+    # BIDDING SYSTEM
     # ------------------------
     def on_mission_req(self, msg: String):
+        """Handle incoming mission request by starting an auction."""
         req = common.mission_req_decode(msg)
         if not req or not req.task:
             self.get_logger().warn("Received invalid mission request.")
             return
-        chosen = None
+
+        # Check if any modules are available
+        available_count = 0
         with self._mod_lock:
-            for module_id, mod in self.modules.items():
+            for mod in self.modules.values():
                 if mod["state"] == common.DockState.ENABLED and not mod["paused"]:
-                    chosen = module_id
-                    mod["paused"] = True
-                    break
-        if chosen:
-            task = common.TaskReq(module_id=chosen, task=req.task)
-            self.pub_task_req.publish(String(data=common.task_req_encode(task)))
-            self.get_logger().info(f"Assigned mission '{req.task}' to {chosen}")
-        else:
-            self.get_logger().warn("No available module to assign mission.")
+                    available_count += 1
+
+        if available_count == 0:
+            self.get_logger().warn("No available modules to bid on mission.")
+            return
+
+        # Start an auction for this task
+        task_id = f"task_{uuid.uuid4().hex[:8]}"
+        self._start_auction(task_id, req.task)
+
+    def _start_auction(self, task_id: str, task: str):
+        """Broadcast a BidNotice and start deadline timer."""
+        self.get_logger().info(
+            f"{COLOR_YELLOW}Starting auction for '{task}' (task_id: {task_id}, deadline: {self.bid_deadline}s){COLOR_RESET}"
+        )
+
+        # Create auction record
+        with self._auction_lock:
+            self.pending_auctions[task_id] = {
+                "task": task,
+                "bids": [],
+                "start_time": self.get_clock().now().nanoseconds / 1e9
+            }
+
+        # Broadcast BidNotice
+        notice = BidNotice(task_id=task_id, task=task, deadline=self.bid_deadline)
+        self.pub_bid_notice.publish(String(data=common.bid_notice_encode(notice)))
+
+        # Start deadline timer
+        self.create_timer(
+            self.bid_deadline,
+            lambda: self._resolve_auction(task_id),
+            callback_group=None
+        )
+
+    def on_bid_proposal(self, msg: String):
+        """Handle incoming bid proposals from modules."""
+        proposal = common.bid_proposal_decode(msg)
+        if not proposal:
+            return
+
+        with self._auction_lock:
+            auction = self.pending_auctions.get(proposal.task_id)
+            if not auction:
+                self.get_logger().debug(f"Received bid for unknown/closed auction: {proposal.task_id}")
+                return
+
+            # Record the bid
+            auction["bids"].append(proposal)
+
+            if proposal.can_execute:
+                self.get_logger().info(
+                    f"Bid received: {proposal.module_id} offers cost={proposal.cost:.2f} for {proposal.task_id}"
+                )
+            else:
+                self.get_logger().info(
+                    f"Bid declined: {proposal.module_id} cannot execute {proposal.task_id}: {proposal.reason}"
+                )
+
+    def _resolve_auction(self, task_id: str):
+        """Deadline reached - pick winner and assign task."""
+        with self._auction_lock:
+            auction = self.pending_auctions.pop(task_id, None)
+
+        if not auction:
+            return  # Already resolved or cancelled
+
+        task = auction["task"]
+        bids = auction["bids"]
+
+        # Filter to executable bids
+        valid_bids = [b for b in bids if b.can_execute]
+
+        if not valid_bids:
+            self.get_logger().warn(
+                f"{COLOR_ORANGE}Auction failed for '{task}' - no valid bids received "
+                f"({len(bids)} total bids, 0 executable){COLOR_RESET}"
+            )
+            return
+
+        # Select lowest cost bid
+        winner = min(valid_bids, key=lambda b: b.cost)
+
+        self.get_logger().info(
+            f"{COLOR_GREEN}Auction resolved: '{task}' awarded to {winner.module_id} "
+            f"(cost={winner.cost:.2f}, {len(valid_bids)} valid bids){COLOR_RESET}"
+        )
+
+        # Mark module as paused (busy)
+        with self._mod_lock:
+            if winner.module_id in self.modules:
+                self.modules[winner.module_id]["paused"] = True
+
+        # Send TaskReq to winner
+        task_req = common.TaskReq(module_id=winner.module_id, task=task)
+        self.pub_task_req.publish(String(data=common.task_req_encode(task_req)))
 
     def on_task_ack(self, msg: String):
         ack = common.task_ack_decode(msg)

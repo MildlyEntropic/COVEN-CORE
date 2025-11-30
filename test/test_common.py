@@ -21,18 +21,21 @@ from coven_core.common import (
     Heartbeat,
     MissionRequest,
     TaskReq, TaskAck, TaskStart, TaskComplete,
+    BidNotice, BidProposal,
     # Encode functions
     ident_req_encode, ident_rep_encode,
     verify_req_encode, verify_rep_encode,
     hb_encode,
     mission_req_encode,
     task_req_encode, task_ack_encode, task_start_encode, task_complete_encode,
+    bid_notice_encode, bid_proposal_encode,
     # Decode functions
     ident_req_decode, ident_rep_decode,
     verify_req_decode, verify_rep_decode,
     hb_decode,
     mission_req_decode,
     task_req_decode, task_ack_decode, task_start_decode, task_complete_decode,
+    bid_notice_decode, bid_proposal_decode,
 )
 
 
@@ -342,6 +345,91 @@ class TestEdgeCases(unittest.TestCase):
         self.assertEqual(decoded.exploration_metrics["coverage"], 0.95)
         self.assertEqual(decoded.exploration_metrics["nested"]["data"], [1, 2, 3])
         self.assertEqual(decoded.exploration_metrics["nested"]["more"]["deep"], "value")
+
+
+class TestBiddingMessages(unittest.TestCase):
+    """Test BidNotice and BidProposal message encode/decode."""
+
+    def test_bid_notice_encode_decode(self):
+        """Test BidNotice round-trip encoding/decoding."""
+        notice = BidNotice(
+            task_id="task_abc123",
+            task="explore_sector_a",
+            deadline=2.5
+        )
+        encoded = bid_notice_encode(notice)
+        msg = String(data=encoded)
+        decoded = bid_notice_decode(msg)
+
+        self.assertIsNotNone(decoded)
+        self.assertEqual(decoded.task_id, "task_abc123")
+        self.assertEqual(decoded.task, "explore_sector_a")
+        self.assertAlmostEqual(decoded.deadline, 2.5)
+
+    def test_bid_notice_malformed_json(self):
+        """Test BidNotice decode with malformed JSON."""
+        msg = String(data="not valid json")
+        decoded = bid_notice_decode(msg)
+        self.assertIsNone(decoded)
+
+    def test_bid_notice_default_deadline(self):
+        """Test BidNotice decode with missing deadline uses default."""
+        msg = String(data='{"task_id": "t1", "task": "explore"}')
+        decoded = bid_notice_decode(msg)
+        self.assertIsNotNone(decoded)
+        self.assertEqual(decoded.deadline, 2.0)  # default
+
+    def test_bid_proposal_encode_decode(self):
+        """Test BidProposal round-trip encoding/decoding."""
+        proposal = BidProposal(
+            task_id="task_abc123",
+            module_id="RR-xyz789",
+            cost=35.5,
+            can_execute=True,
+            reason=""
+        )
+        encoded = bid_proposal_encode(proposal)
+        msg = String(data=encoded)
+        decoded = bid_proposal_decode(msg)
+
+        self.assertIsNotNone(decoded)
+        self.assertEqual(decoded.task_id, "task_abc123")
+        self.assertEqual(decoded.module_id, "RR-xyz789")
+        self.assertAlmostEqual(decoded.cost, 35.5)
+        self.assertTrue(decoded.can_execute)
+        self.assertEqual(decoded.reason, "")
+
+    def test_bid_proposal_cannot_execute(self):
+        """Test BidProposal with can_execute=False."""
+        proposal = BidProposal(
+            task_id="task_abc123",
+            module_id="RR-xyz789",
+            cost=999.0,
+            can_execute=False,
+            reason="Module in FIELD_OPS state"
+        )
+        encoded = bid_proposal_encode(proposal)
+        msg = String(data=encoded)
+        decoded = bid_proposal_decode(msg)
+
+        self.assertIsNotNone(decoded)
+        self.assertFalse(decoded.can_execute)
+        self.assertEqual(decoded.reason, "Module in FIELD_OPS state")
+
+    def test_bid_proposal_malformed_json(self):
+        """Test BidProposal decode with malformed JSON."""
+        msg = String(data="broken")
+        decoded = bid_proposal_decode(msg)
+        self.assertIsNone(decoded)
+
+    def test_bid_proposal_default_values(self):
+        """Test BidProposal decode with missing fields uses defaults."""
+        msg = String(data='{"task_id": "t1", "module_id": "m1"}')
+        decoded = bid_proposal_decode(msg)
+        self.assertIsNotNone(decoded)
+        self.assertEqual(decoded.cost, 999.0)  # default high cost
+        self.assertFalse(decoded.can_execute)  # default false
+        self.assertEqual(decoded.reason, "")
 
 
 if __name__ == '__main__':

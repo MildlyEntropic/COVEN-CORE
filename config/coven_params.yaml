@@ -53,6 +53,9 @@ coven_dock:
     heartbeat_jitter: 0.15       # seconds - tolerance for network jitter
     max_heartbeat_misses: 3      # consecutive misses before dropout
 
+    # Task Bidding System
+    bid_deadline: 2.0            # seconds - time to wait for bids before selecting winner
+
     # File Storage
     map_storage_dir: '~/coven_maps'  # received maps storage location
 
