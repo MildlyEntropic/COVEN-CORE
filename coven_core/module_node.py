@@ -737,8 +737,8 @@ class Module(Node):
 
                 self.get_logger().info("✓ Nav2 action server ready")
 
-                # Create Explorer
-                self.explorer = Explorer(self, self.navigator)
+                # Create Explorer with robot namespace for TF frame resolution
+                self.explorer = Explorer(self, self.navigator, self.robot_namespace)
 
                 self.get_logger().info("Navigation components ready")
                 return  # Success!

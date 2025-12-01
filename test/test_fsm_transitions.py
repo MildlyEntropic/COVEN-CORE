@@ -1,8 +1,12 @@
 """
 test_fsm_transitions.py — FSM State Transition Tests for COVEN
 
-Tests all state machine transitions for both Module and Dock nodes.
-Ensures proper lifecycle management and error recovery.
+Tests each state transition with:
+- Input: message or action
+- Precondition: current state
+- Expected: new state
+
+Every test follows: known input → expected output
 
 Author: Alexander Shultis
 Date: November 2025
@@ -18,283 +22,326 @@ from coven_core.module_node import Module
 from coven_core.dock_node import Dock
 from coven_core.common import (
     ModuleState, DockState,
-    IdentifyReq, VerifyReq,
-    ident_req_encode,
-    verify_req_encode
+    IdentifyReq, IdentifyRep, VerifyReq, VerifyRep,
+    ident_req_encode, ident_rep_encode,
+    verify_req_encode, verify_rep_encode,
 )
 
 
-class TestModuleFSMTransitions(unittest.TestCase):
-    """Test Module FSM state transitions."""
+class TestModuleStateTransitions(unittest.TestCase):
+    """Test Module FSM transitions: input → expected state."""
 
     @classmethod
     def setUpClass(cls):
-        """Initialize ROS2."""
         rclpy.init()
 
     @classmethod
     def tearDownClass(cls):
-        """Shutdown ROS2."""
         rclpy.shutdown()
 
     def setUp(self):
-        """Create module node for each test."""
         self.executor = SingleThreadedExecutor()
-        self.module = Module(module_id="TEST-001", executor=self.executor)
+        self.module = Module(module_id="FSM-001", executor=self.executor)
         self.executor.add_node(self.module)
 
     def tearDown(self):
-        """Cleanup module node."""
+        if self.module.hb_timer:
+            self.module.stop_heartbeat()
         self.executor.remove_node(self.module)
         self.module.destroy_node()
 
     def test_initial_state_is_boot(self):
-        """Test module starts in BOOT state."""
+        """New module starts in BOOT state."""
         self.assertEqual(self.module.state, ModuleState.BOOT)
 
-    def test_boot_to_identify_transition(self):
-        """Test BOOT → IDENTIFY transition on IDENTIFY_REQ."""
-        # Module should be in BOOT
+    def test_boot_to_wait_verify_on_identify(self):
+        """
+        Input: IDENTIFY_REQ
+        Precondition: BOOT
+        Expected: WAIT_VERIFY
+        """
         self.assertEqual(self.module.state, ModuleState.BOOT)
 
-        # Simulate IDENTIFY_REQ
-        req = IdentifyReq(req_id="test-req-123")
-        msg = String(data=ident_req_encode(req))
-
-        # Process message
-        self.module.on_ident_req(msg)
-
-        # Module should transition to WAIT_VERIFY after responding to IDENTIFY
-        self.assertEqual(self.module.state, ModuleState.WAIT_VERIFY)
-
-    def test_identify_to_wait_verify_transition(self):
-        """Test IDENTIFY → WAIT_VERIFY transition."""
-        # Send IDENTIFY_REQ
-        req = IdentifyReq(req_id="test-req-123")
+        req = IdentifyReq(req_id="fsm-test")
         msg = String(data=ident_req_encode(req))
         self.module.on_ident_req(msg)
 
-        # Module transitions to WAIT_VERIFY after responding
         self.assertEqual(self.module.state, ModuleState.WAIT_VERIFY)
 
-    def test_wait_verify_to_normal_transition(self):
-        """Test WAIT_VERIFY → NORMAL transition on successful verification."""
-        # Manually set state to WAIT_VERIFY
+    def test_wait_verify_stays_on_verify_req(self):
+        """
+        Input: VERIFY_REQ (matching module_id)
+        Precondition: WAIT_VERIFY
+        Expected: Still WAIT_VERIFY (waiting for power enable)
+        """
         self.module.state = ModuleState.WAIT_VERIFY
 
-        # Send VERIFY_REQ - module will reply with verification status
-        # Module doesn't automatically transition to NORMAL, it stays in WAIT_VERIFY
-        # until dock sends power enable (12V) message
-        req = VerifyReq(module_id="TEST-001")
+        req = VerifyReq(module_id="FSM-001")
         msg = String(data=verify_req_encode(req))
         self.module.on_verify_req(msg)
 
-        # Module should still be in WAIT_VERIFY (waiting for power enable)
-        # The transition to NORMAL happens on power enable
         self.assertEqual(self.module.state, ModuleState.WAIT_VERIFY)
 
-        # Now simulate 12V power enable to complete transition
-        # on_power looks for "data" field, not "voltage"
-        power_msg = String(data='{"module_id": "TEST-001", "data": true}')
-        self.module.on_power(power_msg)
-
-        # Now should be in NORMAL
-        self.assertEqual(self.module.state, ModuleState.NORMAL)
-
-    def test_wait_verify_to_rejected_transition(self):
-        """Test WAIT_VERIFY → REJECTED transition on failed verification."""
-        # Manually set state to WAIT_VERIFY
+    def test_wait_verify_to_normal_on_power_enable(self):
+        """
+        Input: Power enable message (data=true)
+        Precondition: WAIT_VERIFY
+        Expected: NORMAL
+        """
         self.module.state = ModuleState.WAIT_VERIFY
 
-        # Send VERIFY_REQ from dock (will reject since module sends VerifyRep)
-        # In real system, dock would send VerifyRep, but we can test rejection
-        # by setting module to wrong state
+        power_msg = String(data='{"module_id": "FSM-001", "data": true}')
+        self.module.on_power(power_msg)
 
-        # For now, just verify the state can be set to REJECTED
-        self.module.state = ModuleState.REJECTED
-        self.assertEqual(self.module.state, ModuleState.REJECTED)
+        self.assertEqual(self.module.state, ModuleState.NORMAL)
 
-    def test_normal_to_field_ops_transition(self):
-        """Test NORMAL → FIELD_OPS transition on task assignment."""
-        # Set module to NORMAL state
+    def test_normal_stays_on_identify(self):
+        """
+        Input: IDENTIFY_REQ
+        Precondition: NORMAL
+        Expected: Still NORMAL (ignores identify when not in BOOT)
+        """
         self.module.state = ModuleState.NORMAL
 
-        # Execute task should transition to FIELD_OPS
-        # We'll test this by checking the state during execute_task
-        initial_state = self.module.state
-        self.assertEqual(initial_state, ModuleState.NORMAL)
+        req = IdentifyReq(req_id="should-ignore")
+        msg = String(data=ident_req_encode(req))
+        self.module.on_ident_req(msg)
 
-        # After calling execute_task, state should change to FIELD_OPS
-        # (We can't easily test this without full task execution)
+        self.assertEqual(self.module.state, ModuleState.NORMAL)
 
-    def test_field_ops_to_normal_transition(self):
-        """Test FIELD_OPS → NORMAL transition on task completion."""
-        # Set module to FIELD_OPS
+    def test_field_ops_to_normal_on_cleanup(self):
+        """
+        Input: _cleanup_after_task()
+        Precondition: FIELD_OPS
+        Expected: NORMAL
+        """
         self.module.state = ModuleState.FIELD_OPS
 
-        # Manually call the cleanup function
         self.module._cleanup_after_task()
 
-        # Should return to NORMAL
-        self.assertEqual(self.module.state, ModuleState.NORMAL)
-
-    def test_heartbeat_starts_in_normal_state(self):
-        """Test heartbeat timer starts when entering NORMAL state."""
-        # Set to NORMAL and start heartbeat
-        self.module.state = ModuleState.NORMAL
-        self.module.start_heartbeat()
-
-        # Heartbeat timer should be active
-        self.assertIsNotNone(self.module.hb_timer)
-
-    def test_heartbeat_stops_in_field_ops(self):
-        """Test heartbeat stops when entering FIELD_OPS."""
-        # Start heartbeat
-        self.module.state = ModuleState.NORMAL
-        self.module.start_heartbeat()
-        self.assertIsNotNone(self.module.hb_timer)
-
-        # Stop heartbeat (happens when entering FIELD_OPS)
-        self.module.stop_heartbeat()
-
-        # Heartbeat timer should be None
-        self.assertIsNone(self.module.hb_timer)
-
-    def test_12v_power_enable_in_normal_state(self):
-        """Test 12V power enable when module is in NORMAL state."""
-        # Set to NORMAL
-        self.module.state = ModuleState.NORMAL
-
-        # Simulate 12V power enable message
-        msg = String(data='{"module_id": "TEST-001", "voltage": 12}')
-        self.module.on_power(msg)
-
-        # Module should still be in NORMAL (12V just enables full power)
         self.assertEqual(self.module.state, ModuleState.NORMAL)
 
 
-class TestDockFSMTransitions(unittest.TestCase):
-    """Test Dock FSM state transitions."""
+class TestModuleHeartbeatControl(unittest.TestCase):
+    """Test heartbeat timer control: start/stop behavior."""
 
     @classmethod
     def setUpClass(cls):
-        """Initialize ROS2."""
         if not rclpy.ok():
             rclpy.init()
 
     def setUp(self):
-        """Create dock node for each test."""
+        self.executor = SingleThreadedExecutor()
+        self.module = Module(module_id="HB-FSM-001", executor=self.executor)
+        self.executor.add_node(self.module)
+
+    def tearDown(self):
+        if self.module.hb_timer:
+            self.module.stop_heartbeat()
+        self.executor.remove_node(self.module)
+        self.module.destroy_node()
+
+    def test_heartbeat_timer_none_initially(self):
+        """New module has no heartbeat timer."""
+        self.assertIsNone(self.module.hb_timer)
+
+    def test_start_heartbeat_creates_timer(self):
+        """
+        Input: start_heartbeat()
+        Precondition: hb_timer is None
+        Expected: hb_timer is not None
+        """
+        self.assertIsNone(self.module.hb_timer)
+
+        self.module.start_heartbeat()
+
+        self.assertIsNotNone(self.module.hb_timer)
+
+    def test_stop_heartbeat_destroys_timer(self):
+        """
+        Input: stop_heartbeat()
+        Precondition: hb_timer is active
+        Expected: hb_timer is None
+        """
+        self.module.start_heartbeat()
+        self.assertIsNotNone(self.module.hb_timer)
+
+        self.module.stop_heartbeat()
+
+        self.assertIsNone(self.module.hb_timer)
+
+    def test_start_heartbeat_is_idempotent(self):
+        """
+        Input: start_heartbeat() called twice
+        Expected: Does not create duplicate timer
+        """
+        self.module.start_heartbeat()
+        timer1 = self.module.hb_timer
+
+        self.module.start_heartbeat()
+        timer2 = self.module.hb_timer
+
+        # Same timer object (not a new one)
+        self.assertIs(timer1, timer2)
+
+
+class TestDockModuleTracking(unittest.TestCase):
+    """Test dock module registration and state tracking."""
+
+    @classmethod
+    def setUpClass(cls):
+        if not rclpy.ok():
+            rclpy.init()
+
+    def setUp(self):
         self.executor = SingleThreadedExecutor()
         self.dock = Dock()
         self.executor.add_node(self.dock)
 
     def tearDown(self):
-        """Cleanup dock node."""
         self.executor.remove_node(self.dock)
         self.dock.destroy_node()
 
-    def test_module_detection_and_tracking(self):
-        """Test dock can track module after IDENTIFY."""
-        # Initially no modules
+    def test_dock_starts_with_no_modules(self):
+        """New dock has empty modules dict."""
         self.assertEqual(len(self.dock.modules), 0)
 
-        # In real system, IDENTIFY_REP would be processed via topic subscription
-        # and dock would add module to tracking
-        # For this unit test, we're just verifying initial state
+    def test_ident_rep_registers_module_in_verify_state(self):
+        """
+        Input: IDENTIFY_REP from module "DOCK-TEST-001"
+        Expected: dock.modules["DOCK-TEST-001"]["state"] == VERIFY
+        """
+        rep = IdentifyRep(
+            req_id="test",
+            module_id="DOCK-TEST-001",
+            module_type="ReconRover",
+            fw="1.0.0"
+        )
+        msg = String(data=ident_rep_encode(rep))
 
-    def test_heartbeat_monitoring(self):
-        """Test dock can track module heartbeats."""
-        # Add a test module to dock's tracking
-        self.dock.modules["TEST-001"] = {
-            'module_id': 'TEST-001',
-            'module_type': 'ReconRover',
-            'fw': '1.0.0',
-            'state': DockState.NORMAL,
-            'last_hb': time.time(),
-            'hb_seq': 0,
-            'missed_hbs': 0
+        self.dock.on_ident_rep(msg)
+
+        self.assertIn("DOCK-TEST-001", self.dock.modules)
+        self.assertEqual(self.dock.modules["DOCK-TEST-001"]["state"], DockState.VERIFY)
+
+    def test_verify_rep_ok_transitions_to_enabled(self):
+        """
+        Input: VERIFY_REP with ok=True
+        Precondition: Module in VERIFY state
+        Expected: Module state → ENABLED
+        """
+        # Register module first
+        self.dock.modules["DOCK-TEST-002"] = {
+            "state": DockState.VERIFY,
+            "last_hb": time.time(),
+            "miss_count": 0,
+            "paused": False
         }
 
-        # Verify module is tracked
-        self.assertIn("TEST-001", self.dock.modules)
+        rep = VerifyRep(module_id="DOCK-TEST-002", ok=True, reason="")
+        msg = String(data=verify_rep_encode(rep))
 
-        # Verify module has heartbeat tracking fields
-        module = self.dock.modules["TEST-001"]
-        self.assertIn('last_hb', module)
-        self.assertIn('missed_hbs', module)
+        self.dock.on_verify_rep(msg)
 
-        # Simulate heartbeat timeout by setting last_hb to old time
-        self.dock.modules["TEST-001"]['last_hb'] = time.time() - 10.0
+        self.assertEqual(self.dock.modules["DOCK-TEST-002"]["state"], DockState.ENABLED)
 
-        # Module is still tracked (actual dropout detection happens in timer callback)
-        self.assertIn("TEST-001", self.dock.modules)
+    def test_verify_rep_fail_transitions_to_rejected(self):
+        """
+        Input: VERIFY_REP with ok=False
+        Precondition: Module in VERIFY state
+        Expected: Module state → REJECTED
+        """
+        # Register module first
+        self.dock.modules["DOCK-TEST-003"] = {
+            "state": DockState.VERIFY,
+            "last_hb": time.time(),
+            "miss_count": 0,
+            "paused": False
+        }
 
-    def test_multiple_module_tracking(self):
-        """Test dock can track multiple modules simultaneously."""
-        # Add multiple modules
-        for i in range(3):
-            module_id = f"TEST-{i:03d}"
-            self.dock.modules[module_id] = {
-                'module_id': module_id,
-                'module_type': 'ReconRover',
-                'fw': '1.0.0',
-                'state': DockState.NORMAL,
-                'last_hb': time.time(),
-                'hb_seq': 0,
-                'missed_hbs': 0
-            }
+        rep = VerifyRep(module_id="DOCK-TEST-003", ok=False, reason="Health check failed")
+        msg = String(data=verify_rep_encode(rep))
 
-        # Should have 3 modules
-        self.assertEqual(len(self.dock.modules), 3)
+        self.dock.on_verify_rep(msg)
+
+        self.assertEqual(self.dock.modules["DOCK-TEST-003"]["state"], DockState.REJECTED)
+
+    def test_verify_rep_for_unknown_module_ignored(self):
+        """
+        Input: VERIFY_REP for module not in dock.modules
+        Expected: No crash, no change
+        """
+        initial_count = len(self.dock.modules)
+
+        rep = VerifyRep(module_id="UNKNOWN-MODULE", ok=True, reason="")
+        msg = String(data=verify_rep_encode(rep))
+
+        # Should not crash
+        self.dock.on_verify_rep(msg)
+
+        # No new modules added
+        self.assertEqual(len(self.dock.modules), initial_count)
 
 
-class TestErrorRecovery(unittest.TestCase):
-    """Test error recovery scenarios."""
+class TestWatchdogTimer(unittest.TestCase):
+    """Test task watchdog timer behavior."""
 
     @classmethod
     def setUpClass(cls):
-        """Initialize ROS2."""
         if not rclpy.ok():
             rclpy.init()
 
     def setUp(self):
-        """Create module for each test."""
         self.executor = SingleThreadedExecutor()
-        self.module = Module(module_id="TEST-ERR", executor=self.executor)
+        self.module = Module(module_id="WD-001", executor=self.executor)
         self.executor.add_node(self.module)
 
     def tearDown(self):
-        """Cleanup."""
+        if self.module.task_watchdog_timer:
+            self.module._stop_task_watchdog()
+        if self.module.hb_timer:
+            self.module.stop_heartbeat()
         self.executor.remove_node(self.module)
         self.module.destroy_node()
 
-    def test_watchdog_timeout_recovery(self):
-        """Test module recovers from task timeout via watchdog."""
-        # Set module to FIELD_OPS
-        self.module.state = ModuleState.FIELD_OPS
-
-        # Start watchdog
-        self.module._start_task_watchdog("test_task")
-
-        # Watchdog timer should be set
-        self.assertIsNotNone(self.module.task_watchdog_timer)
-
-        # Cleanup (simulates task completion)
-        self.module._cleanup_after_task()
-
-        # Should return to NORMAL
-        self.assertEqual(self.module.state, ModuleState.NORMAL)
+    def test_watchdog_none_initially(self):
+        """New module has no watchdog timer."""
         self.assertIsNone(self.module.task_watchdog_timer)
 
-    def test_navigation_initialization_retry(self):
-        """Test navigation initialization retries on failure."""
-        # This would require mocking Nav2, so we just verify the method exists
-        self.assertTrue(hasattr(self.module, '_initialize_navigation'))
+    def test_start_watchdog_creates_timer(self):
+        """
+        Input: _start_task_watchdog("test")
+        Expected: task_watchdog_timer is not None
+        """
+        self.module._start_task_watchdog("test_task")
 
-        # Verify it accepts max_retries parameter
-        import inspect
-        sig = inspect.signature(self.module._initialize_navigation)
-        self.assertIn('max_retries', sig.parameters)
+        self.assertIsNotNone(self.module.task_watchdog_timer)
+
+    def test_stop_watchdog_destroys_timer(self):
+        """
+        Input: _stop_task_watchdog()
+        Precondition: Watchdog active
+        Expected: task_watchdog_timer is None
+        """
+        self.module._start_task_watchdog("test_task")
+        self.assertIsNotNone(self.module.task_watchdog_timer)
+
+        self.module._stop_task_watchdog()
+
+        self.assertIsNone(self.module.task_watchdog_timer)
+
+    def test_cleanup_stops_watchdog(self):
+        """
+        Input: _cleanup_after_task()
+        Precondition: Watchdog active
+        Expected: Watchdog stopped
+        """
+        self.module.state = ModuleState.FIELD_OPS
+        self.module._start_task_watchdog("test_task")
+
+        self.module._cleanup_after_task()
+
+        self.assertIsNone(self.module.task_watchdog_timer)
 
 
 if __name__ == '__main__':

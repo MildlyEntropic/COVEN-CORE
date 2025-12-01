@@ -24,10 +24,17 @@ import time
 from typing import List, Tuple, Optional
 
 # --- Third-party (ROS2) ---
+import rclpy
 from rclpy.node import Node
+from rclpy.time import Time
+from rclpy.duration import Duration
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import OccupancyGrid
 from nav2_simple_commander.robot_navigator import BasicNavigator, TaskResult
+
+# --- TF2 for pose lookups ---
+from tf2_ros import Buffer, TransformListener
+from tf2_ros import TransformException  # Base class for all TF2 exceptions
 
 # --- NumPy for frontier detection ---
 try:
@@ -54,22 +61,38 @@ class Explorer:
     Autonomous exploration manager using frontier-based navigation.
     """
 
-    def __init__(self, node: Node, navigator: BasicNavigator):
+    def __init__(self, node: Node, navigator: BasicNavigator, robot_namespace: str = ""):
         """
         Initialize the explorer.
 
         Args:
             node: ROS2 node for logging and subscriptions
             navigator: Nav2 BasicNavigator instance
+            robot_namespace: Robot namespace for TF frames (e.g., "RR-abc123")
         """
         self.node = node
         self.navigator = navigator
+        self.robot_namespace = robot_namespace
         self.current_map: Optional[OccupancyGrid] = None
         self.start_time = None
         self.start_pose: Optional[PoseStamped] = None
+        self.last_pose: Optional[PoseStamped] = None  # Track for distance calculation
         self.explored_cells = 0
         self.total_reachable_cells = 0
         self.no_frontier_count = 0
+
+        # TF2 buffer and listener for pose lookups
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, node)
+
+        # Determine frame names based on namespace
+        # Multi-robot: "RR-abc123/base_link" → "map"
+        # Single-robot: "base_link" → "map"
+        if robot_namespace:
+            self.base_frame = f"{robot_namespace}/base_link"
+        else:
+            self.base_frame = "base_link"
+        self.map_frame = "map"
 
         # Subscribe to map updates from SLAM
         self.map_sub = node.create_subscription(
@@ -79,7 +102,9 @@ class Explorer:
             10
         )
 
-        self.node.get_logger().info("Explorer initialized")
+        self.node.get_logger().info(
+            f"Explorer initialized (base_frame: {self.base_frame}, map_frame: {self.map_frame})"
+        )
 
     def _map_callback(self, msg: OccupancyGrid):
         """Update current map from SLAM."""
@@ -92,15 +117,43 @@ class Explorer:
             self.total_reachable_cells = max(self.explored_cells,
                                              msg.info.width * msg.info.height // 2)
 
-    def get_current_pose(self) -> PoseStamped:
-        """Get robot's current pose from navigator."""
-        pose = PoseStamped()
-        pose.header.frame_id = 'map'
-        pose.header.stamp = self.navigator.get_clock().now().to_msg()
+    def get_current_pose(self) -> Optional[PoseStamped]:
+        """
+        Get robot's current pose via TF2 lookup.
 
-        # Try to get current pose from navigator (may require TF lookup in full impl)
-        # For now, return a default - in production, use TF2 to get actual pose
-        return pose
+        Uses Time(seconds=0) to get the latest available transform, avoiding
+        extrapolation errors when transforms haven't propagated yet.
+
+        Returns:
+            PoseStamped with current robot position, or None if lookup fails
+        """
+        try:
+            # Use Time(seconds=0) for latest available transform
+            # This avoids ExtrapolationException when current time transform
+            # hasn't arrived yet (common in multi-robot scenarios)
+            transform = self.tf_buffer.lookup_transform(
+                self.map_frame,
+                self.base_frame,
+                Time(seconds=0),  # Latest available
+                timeout=Duration(seconds=1.0)
+            )
+
+            # Convert transform to PoseStamped
+            pose = PoseStamped()
+            pose.header.frame_id = self.map_frame
+            pose.header.stamp = transform.header.stamp
+            pose.pose.position.x = transform.transform.translation.x
+            pose.pose.position.y = transform.transform.translation.y
+            pose.pose.position.z = transform.transform.translation.z
+            pose.pose.orientation = transform.transform.rotation
+
+            return pose
+
+        except TransformException as e:
+            self.node.get_logger().warn(
+                f"TF lookup failed ({self.map_frame} → {self.base_frame}): {e}"
+            )
+            return None
 
     def find_frontiers(self) -> List[PoseStamped]:
         """
@@ -217,8 +270,17 @@ class Explorer:
         """
         self.start_time = time.time()
         self.start_pose = self.get_current_pose()
+        self.last_pose = self.start_pose  # Initialize for distance tracking
 
-        self.node.get_logger().info(f"Starting exploration (max duration: {duration}s)")
+        if self.start_pose:
+            self.node.get_logger().info(
+                f"Starting exploration at ({self.start_pose.pose.position.x:.2f}, "
+                f"{self.start_pose.pose.position.y:.2f}) (max duration: {duration}s)"
+            )
+        else:
+            self.node.get_logger().warn(
+                f"Starting exploration - could not get initial pose (max duration: {duration}s)"
+            )
 
         iteration = 0
         total_distance = 0.0
@@ -289,13 +351,12 @@ class Explorer:
 
             if result == TaskResult.SUCCEEDED:
                 self.node.get_logger().info("Reached frontier waypoint")
-                total_distance += self._estimate_distance(closest_goal)
+                total_distance += self._update_distance_traveled()
             elif result == TaskResult.CANCELED:
                 self.node.get_logger().warn("Navigation canceled")
                 break
             elif result == TaskResult.FAILED:
                 self.node.get_logger().warn("Navigation failed, trying next frontier")
-                continue
 
         # Compile metrics
         final_coverage = self._calculate_coverage()
@@ -351,19 +412,62 @@ class Explorer:
         return self.explored_cells / self.total_reachable_cells
 
     def _select_closest_goal(self, goals: List[PoseStamped]) -> Optional[PoseStamped]:
-        """Select the closest goal from a list."""
+        """
+        Select the closest goal from a list based on Euclidean distance.
+
+        Args:
+            goals: List of candidate goal poses
+
+        Returns:
+            Closest goal pose, or None if no goals available
+        """
         if not goals:
             return None
 
-        # For simplicity, return first goal
-        # In production, calculate actual distance to current pose
-        return goals[0]
+        # Get current robot position
+        current_pose = self.get_current_pose()
+        if not current_pose:
+            # Fall back to first goal if can't get current pose
+            self.node.get_logger().debug("Cannot get current pose, selecting first goal")
+            return goals[0]
 
-    def _estimate_distance(self, goal: PoseStamped) -> float:
-        """Estimate distance traveled to goal."""
-        if not self.start_pose:
+        robot_x = current_pose.pose.position.x
+        robot_y = current_pose.pose.position.y
+
+        # Find closest goal by Euclidean distance
+        min_distance = float('inf')
+        closest_goal = None
+
+        for goal in goals:
+            dx = goal.pose.position.x - robot_x
+            dy = goal.pose.position.y - robot_y
+            distance = math.sqrt(dx * dx + dy * dy)
+
+            if distance < min_distance:
+                min_distance = distance
+                closest_goal = goal
+
+        return closest_goal
+
+    def _distance_between_poses(self, pose1: PoseStamped, pose2: PoseStamped) -> float:
+        """Calculate Euclidean distance between two poses."""
+        dx = pose2.pose.position.x - pose1.pose.position.x
+        dy = pose2.pose.position.y - pose1.pose.position.y
+        return math.sqrt(dx * dx + dy * dy)
+
+    def _update_distance_traveled(self) -> float:
+        """
+        Calculate distance traveled since last pose update.
+
+        Updates last_pose and returns the distance traveled.
+        """
+        current_pose = self.get_current_pose()
+        if not current_pose:
             return 0.0
 
-        dx = goal.pose.position.x - self.start_pose.pose.position.x
-        dy = goal.pose.position.y - self.start_pose.pose.position.y
-        return math.sqrt(dx*dx + dy*dy)
+        distance = 0.0
+        if self.last_pose:
+            distance = self._distance_between_poses(self.last_pose, current_pose)
+
+        self.last_pose = current_pose
+        return distance

@@ -99,11 +99,12 @@ class TestRigorousIdentification(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        rclpy.init()
+        if not rclpy.ok():
+            rclpy.init()
 
     @classmethod
     def tearDownClass(cls):
-        rclpy.shutdown()
+        pass  # Don't shutdown - other test classes may need rclpy
 
     def setUp(self):
         self.executor = MultiThreadedExecutor()
