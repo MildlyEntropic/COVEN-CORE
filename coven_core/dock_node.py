@@ -59,7 +59,7 @@ DEFAULT_BID_DEADLINE = 2.0    # seconds to wait for bids
 class Dock(Node):
     """Dock node that manages multiple modules and assigns tasks."""
 
-    def __init__(self):
+    def __init__(self, dock_name: str = None):
         super().__init__('coven_dock')
 
         # Declare ROS2 parameters (loaded from config/coven_params.yaml)
@@ -69,6 +69,7 @@ class Dock(Node):
         self.declare_parameter('max_heartbeat_misses', DEFAULT_MAX_MISSES)
         self.declare_parameter('map_storage_dir', DEFAULT_MAP_STORAGE_DIR)
         self.declare_parameter('bid_deadline', DEFAULT_BID_DEADLINE)
+        self.declare_parameter('dock_name', '')
 
         # Get parameter values
         self.ident_period = self.get_parameter('identify_period').value
@@ -76,6 +77,10 @@ class Dock(Node):
         self.hb_jitter = self.get_parameter('heartbeat_jitter').value
         self.max_misses = int(self.get_parameter('max_heartbeat_misses').value)
         self.bid_deadline = self.get_parameter('bid_deadline').value
+
+        # Dock name: use parameter, or constructor arg, or generate coven name
+        dock_name_param = self.get_parameter('dock_name').value
+        self.dock_name = dock_name_param or dock_name or common.get_coven_name()
 
         self.modules = {}  # module_id → {state, last_hb, miss_count, paused}
         self.live_hb = set()
@@ -113,7 +118,10 @@ class Dock(Node):
         self.ident_timer = self.create_timer(self.ident_period, self.broadcast_identify)
         self.hb_timer = self.create_timer(0.5, self.flush_heartbeat_log)
 
-        self.get_logger().info(f"DockMulti initialized — ready to manage multiple modules (ident_period: {self.ident_period}s, bid_deadline: {self.bid_deadline}s)")
+        self.get_logger().info(
+            f"Coven '{self.dock_name}' initialized — ready to manage witches "
+            f"(ident_period: {self.ident_period}s, bid_deadline: {self.bid_deadline}s)"
+        )
 
     # ------------------------
     # IDENTIFY / VERIFY

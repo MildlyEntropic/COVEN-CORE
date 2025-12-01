@@ -19,6 +19,7 @@ Date: September 2025
 # --- Standard library ---
 import json
 import logging
+import random
 from dataclasses import dataclass
 from enum import Enum
 
@@ -64,6 +65,153 @@ COLOR_YELLOW = "\033[93m"
 COLOR_ORANGE = "\033[38;5;208m"
 COLOR_RED    = "\033[91m"
 COLOR_RESET  = "\033[0m"
+
+
+# ------------------------
+# --- Witch Naming System ---
+# ------------------------
+# COVEN: Modules are named after famous witches from mythology, literature, and pop culture
+# The dock (coven leader) is named after famous covens or witch gatherings
+
+# Witches for module naming (rovers/modules)
+WITCH_NAMES = [
+    # Arthurian
+    "Morgan_Le_Fay",
+    # Greek
+    "Hecate",
+    "Circe",
+    # Celtic
+    "Scathach",
+    "Morrigan",
+    # Germanic
+    "Lorelei",
+    "Frau_Holle",
+    # Finnish
+    "Louhi",
+    # Slavic
+    "Baba_Yaga",
+    # West African
+    "Mami_Wata",
+    # Japanese
+    "Princess_Kaguya",
+    # Wizard of Oz
+    "Elphaba",
+    "Glinda",
+    # Marvel
+    "Wanda_Maximoff",
+    "Agatha_Harkness",
+    # DC Comics
+    "Zatanna_Zatara",
+    # Harry Potter
+    "Hermione_Granger",
+    "Minerva_McGonagall",
+    # Sabrina
+    "Sabrina_Spellman",
+    # Buffy
+    "Willow_Rosenberg",
+    # Disney
+    "Maleficent",
+    # Bewitched
+    "Endora",
+    "Samantha_Stephens",
+    # Studio Ghibli
+    "Kiki",
+    "Yubaba",
+    # Little Witch Academia
+    "Akko",
+    # Witch Watch
+    "Nico_Wakatsuki",
+    # Star Wars (Dathomir)
+    "Mother_Talzin",
+    "Old_Daka",
+    "Axkva_Min",
+]
+
+# Coven names for dock/hub naming (famous witch groups/sisterhoods)
+COVEN_NAMES = [
+    # Greek
+    "The_Graeae",
+    "The_Erinyes",
+    # Norse
+    "The_Norns",
+    # Shakespeare
+    "The_Weird_Sisters",
+    # Hocus Pocus
+    "The_Sanderson_Sisters",
+    # Scooby-Doo
+    "The_Hex_Girls",
+    # The Witcher
+    "The_Crones",
+    # Brave
+    "The_Hags_of_Dun_Broch",
+    # Dune
+    "The_Bene_Gesserit",
+    # Stardust
+    "The_Lilim",
+]
+
+# Track used names to avoid duplicates during runtime
+_used_witch_names: set = set()
+_used_coven_names: set = set()
+
+
+def get_witch_name() -> str:
+    """
+    Get a random available witch name for a module.
+
+    Returns unique names randomly selected from the pool.
+    Once all names are used, the pool resets.
+
+    Returns:
+        A witch name string (e.g., "Baba_Yaga", "Hermione_Granger")
+    """
+    global _used_witch_names
+
+    # Get available names (not yet used)
+    available = [n for n in WITCH_NAMES if n not in _used_witch_names]
+
+    # If all names used, reset the pool
+    if not available:
+        _used_witch_names.clear()
+        available = WITCH_NAMES.copy()
+
+    # Pick randomly from available
+    name = random.choice(available)
+    _used_witch_names.add(name)
+    return name
+
+
+def get_coven_name() -> str:
+    """
+    Get a random available coven name for a dock/hub.
+
+    Returns unique names randomly selected from the pool.
+    Once all names are used, the pool resets.
+
+    Returns:
+        A coven name string (e.g., "The_Graeae", "The_Norns")
+    """
+    global _used_coven_names
+
+    # Get available names (not yet used)
+    available = [n for n in COVEN_NAMES if n not in _used_coven_names]
+
+    # If all names used, reset the pool
+    if not available:
+        _used_coven_names.clear()
+        available = COVEN_NAMES.copy()
+
+    # Pick randomly from available
+    name = random.choice(available)
+    _used_coven_names.add(name)
+    return name
+
+
+def reset_naming():
+    """Reset naming system (useful for testing)."""
+    global _used_witch_names, _used_coven_names
+    _used_witch_names.clear()
+    _used_coven_names.clear()
 
 
 # ------------------------

@@ -95,15 +95,23 @@ class Explorer:
         self.map_frame = "map"
 
         # Subscribe to map updates from SLAM
+        # Multi-robot: subscribe to namespaced map topic (e.g., /robot_1/map)
+        # Single-robot: subscribe to global /map
+        if robot_namespace:
+            map_topic = f'/{robot_namespace}/map'
+        else:
+            map_topic = '/map'
+
         self.map_sub = node.create_subscription(
             OccupancyGrid,
-            '/map',
+            map_topic,
             self._map_callback,
             10
         )
 
         self.node.get_logger().info(
-            f"Explorer initialized (base_frame: {self.base_frame}, map_frame: {self.map_frame})"
+            f"Explorer initialized (base_frame: {self.base_frame}, "
+            f"map_frame: {self.map_frame}, map_topic: {map_topic})"
         )
 
     def _map_callback(self, msg: OccupancyGrid):

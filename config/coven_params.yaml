@@ -23,7 +23,7 @@ coven_module:
     map_storage_dir: '~/coven_maps'  # temporary map storage before transfer
 
     # Module Identity (can be overridden via launch args)
-    # module_id: ''              # Empty = auto-generate RR-xxxxxx
+    # module_id: ''              # Empty = auto-generate witch name (Morgan_Le_Fay, Baba_Yaga, etc.)
     # robot_namespace: ''        # Empty = global namespace
 
     # Spawn Position (for simulation)
@@ -45,6 +45,9 @@ coven_module:
 # Dock Node Parameters
 coven_dock:
   ros__parameters:
+    # Dock Identity
+    # dock_name: ''              # Empty = auto-generate coven name (The_Graeae, The_Weird_Sisters, etc.)
+
     # Discovery Protocol
     identify_period: 5.0         # seconds between IDENTIFY_REQ broadcasts
 

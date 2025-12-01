@@ -93,7 +93,9 @@ class Module(Node):
         self.map_storage_dir = os.path.expanduser(self.get_parameter('map_storage_dir').value)
         self.skip_health_check = self.get_parameter('skip_health_check').value
 
-        self.module_id = module_id or f"RR-{str(uuid.uuid4())[:6]}"
+        # Use provided module_id, or generate a witch name for this module
+        # The witch naming system gives each rover a unique, memorable name
+        self.module_id = module_id or common.get_witch_name()
         self.module_type = module_type
         self.fw = fw
         self.state = ModuleState.BOOT
