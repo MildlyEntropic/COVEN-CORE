@@ -82,16 +82,18 @@ class Explorer:
         self.no_frontier_count = 0
 
         # TF2 buffer and listener for pose lookups
+        # IMPORTANT: Use the navigator node for TF, not the module node!
+        # The navigator is in the robot's namespace (e.g., /robot_1) so its
+        # TF listener subscribes to /robot_1/tf where the robot publishes.
+        # The module node is in global namespace for COVEN protocol topics.
         self.tf_buffer = Buffer()
-        self.tf_listener = TransformListener(self.tf_buffer, node)
+        # Use navigator (which is namespaced) for TF subscriptions
+        tf_node = navigator if robot_namespace else node
+        self.tf_listener = TransformListener(self.tf_buffer, tf_node)
 
-        # Determine frame names based on namespace
-        # Multi-robot: "RR-abc123/base_link" → "map"
-        # Single-robot: "base_link" → "map"
-        if robot_namespace:
-            self.base_frame = f"{robot_namespace}/base_link"
-        else:
-            self.base_frame = "base_link"
+        # Frame names are NOT prefixed - TurtleBot4 uses plain names
+        # The namespace isolation happens via TF topic (/robot_1/tf)
+        self.base_frame = "base_link"
         self.map_frame = "map"
 
         # Subscribe to map updates from SLAM
@@ -109,9 +111,10 @@ class Explorer:
             10
         )
 
+        tf_source = f"/{robot_namespace}/tf" if robot_namespace else "/tf"
         self.node.get_logger().info(
             f"Explorer initialized (base_frame: {self.base_frame}, "
-            f"map_frame: {self.map_frame}, map_topic: {map_topic})"
+            f"map_frame: {self.map_frame}, map_topic: {map_topic}, tf: {tf_source})"
         )
 
     def _map_callback(self, msg: OccupancyGrid):

@@ -789,11 +789,18 @@ class Module(Node):
     def _get_current_pose(self) -> PoseStamped:
         """Get the current robot pose using TF2."""
         try:
+            # Use the explorer's TF buffer if available (it's connected to the
+            # namespaced navigator, so it can see /robot_1/tf). Fall back to
+            # self.tf_buffer for non-namespaced operation.
+            tf_buffer = self.explorer.tf_buffer if self.explorer else self.tf_buffer
+
             # Try to get transform from map to base_link
             # This gives us the robot's pose in the map frame
-            transform = self.tf_buffer.lookup_transform(
+            # NOTE: Frame names are NOT prefixed - TurtleBot4 uses plain names
+            # Namespace isolation happens via TF topic (/robot_1/tf)
+            transform = tf_buffer.lookup_transform(
                 'map',
-                f'{self.robot_namespace}/base_link' if self.robot_namespace else 'base_link',
+                'base_link',
                 rclpy.time.Time(),
                 timeout=rclpy.duration.Duration(seconds=1.0)
             )
