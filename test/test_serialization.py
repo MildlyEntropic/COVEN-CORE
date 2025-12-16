@@ -32,6 +32,8 @@ from coven_core.common import (
     MissionRequest, Waypoint,
     TaskReq, TaskAck, TaskStart, TaskComplete,
     BidNotice, BidProposal,
+    CoverageGoal, CoverageStatus, BatteryConfig, CoverageConfig,
+    Sector, CoverageMissionComplete,
 )
 
 
@@ -479,6 +481,177 @@ class TestROSMessageCompatibility(unittest.TestCase):
 
         self.assertIsNotNone(decoded)
         self.assertEqual(decoded.req_id, "from_ros")
+
+
+class TestCoverageMessages(unittest.TestCase):
+    """Test coverage exploration dataclass serialization."""
+
+    def test_coverage_goal_roundtrip(self):
+        """CoverageGoal: encode → decode produces identical object."""
+        original = CoverageGoal(
+            target_coverage=0.90,
+            sector="NE",
+            sector_bounds=(0.0, 0.0, 5.0, 5.0),
+            max_exploration_time=180.0,
+            return_on_low_battery=True,
+            battery_return_threshold=0.25
+        )
+        encoded = encode(original)
+        decoded = decode(encoded, CoverageGoal)
+
+        self.assertIsNotNone(decoded)
+        self.assertAlmostEqual(decoded.target_coverage, 0.90)
+        self.assertEqual(decoded.sector, "NE")
+        # JSON converts tuples to lists, so compare as lists
+        self.assertEqual(list(decoded.sector_bounds), [0.0, 0.0, 5.0, 5.0])
+        self.assertAlmostEqual(decoded.max_exploration_time, 180.0)
+        self.assertTrue(decoded.return_on_low_battery)
+        self.assertAlmostEqual(decoded.battery_return_threshold, 0.25)
+
+    def test_coverage_goal_defaults(self):
+        """CoverageGoal: missing fields should use sensible defaults."""
+        decoded = decode('{}', CoverageGoal)
+
+        self.assertIsNotNone(decoded)
+        self.assertAlmostEqual(decoded.target_coverage, 0.95)
+        self.assertIsNone(decoded.sector)
+        self.assertIsNone(decoded.sector_bounds)
+        self.assertAlmostEqual(decoded.max_exploration_time, 300.0)
+        self.assertTrue(decoded.return_on_low_battery)
+        self.assertAlmostEqual(decoded.battery_return_threshold, 0.20)
+
+    def test_coverage_status_roundtrip(self):
+        """CoverageStatus: encode → decode produces identical object."""
+        original = CoverageStatus(
+            module_id="Akko",
+            current_coverage=0.45,
+            battery_remaining=0.72,
+            distance_traveled=15.3,
+            frontiers_remaining=8,
+            returning_to_dock=False,
+            reason="exploring"
+        )
+        encoded = encode(original)
+        decoded = decode(encoded, CoverageStatus)
+
+        self.assertIsNotNone(decoded)
+        self.assertEqual(decoded.module_id, "Akko")
+        self.assertAlmostEqual(decoded.current_coverage, 0.45)
+        self.assertAlmostEqual(decoded.battery_remaining, 0.72)
+        self.assertAlmostEqual(decoded.distance_traveled, 15.3)
+        self.assertEqual(decoded.frontiers_remaining, 8)
+        self.assertFalse(decoded.returning_to_dock)
+        self.assertEqual(decoded.reason, "exploring")
+
+    def test_coverage_status_returning(self):
+        """CoverageStatus: returning_to_dock with reason should survive round-trip."""
+        original = CoverageStatus(
+            module_id="Baba_Yaga",
+            current_coverage=0.31,
+            battery_remaining=0.18,
+            distance_traveled=42.7,
+            frontiers_remaining=3,
+            returning_to_dock=True,
+            reason="low_battery"
+        )
+        encoded = encode(original)
+        decoded = decode(encoded, CoverageStatus)
+
+        self.assertTrue(decoded.returning_to_dock)
+        self.assertEqual(decoded.reason, "low_battery")
+
+    def test_battery_config_roundtrip(self):
+        """BatteryConfig: encode → decode produces identical object."""
+        original = BatteryConfig(
+            initial_level=0.8,
+            drain_per_meter=0.01,
+            drain_per_second_idle=0.0002,
+            return_threshold=0.25,
+            critical_threshold=0.10,
+            recharge_rate=0.15
+        )
+        encoded = encode(original)
+        decoded = decode(encoded, BatteryConfig)
+
+        self.assertIsNotNone(decoded)
+        self.assertAlmostEqual(decoded.initial_level, 0.8)
+        self.assertAlmostEqual(decoded.drain_per_meter, 0.01)
+        self.assertAlmostEqual(decoded.drain_per_second_idle, 0.0002)
+        self.assertAlmostEqual(decoded.return_threshold, 0.25)
+        self.assertAlmostEqual(decoded.critical_threshold, 0.10)
+        self.assertAlmostEqual(decoded.recharge_rate, 0.15)
+
+    def test_sector_roundtrip(self):
+        """Sector: encode → decode produces identical object."""
+        original = Sector(
+            name="NE",
+            bounds=(-2.5, 0.0, 2.5, 5.0),
+            assigned_to="Hermione_Granger",
+            coverage=0.67
+        )
+        encoded = encode(original)
+        decoded = decode(encoded, Sector)
+
+        self.assertIsNotNone(decoded)
+        self.assertEqual(decoded.name, "NE")
+        # JSON converts tuples to lists, so compare as lists
+        self.assertEqual(list(decoded.bounds), [-2.5, 0.0, 2.5, 5.0])
+        self.assertEqual(decoded.assigned_to, "Hermione_Granger")
+        self.assertAlmostEqual(decoded.coverage, 0.67)
+
+    def test_sector_unassigned(self):
+        """Sector: unassigned sector should have None assigned_to."""
+        original = Sector(name="SW", bounds=(0.0, 0.0, 5.0, 5.0))
+        encoded = encode(original)
+        decoded = decode(encoded, Sector)
+
+        self.assertIsNone(decoded.assigned_to)
+        self.assertAlmostEqual(decoded.coverage, 0.0)
+
+    def test_coverage_mission_complete_roundtrip(self):
+        """CoverageMissionComplete: encode → decode produces identical object."""
+        original = CoverageMissionComplete(
+            success=True,
+            total_coverage=0.96,
+            target_coverage=0.95,
+            total_time=542.3,
+            rovers_dispatched=2,
+            dispatch_cycles=4
+        )
+        encoded = encode(original)
+        decoded = decode(encoded, CoverageMissionComplete)
+
+        self.assertIsNotNone(decoded)
+        self.assertTrue(decoded.success)
+        self.assertAlmostEqual(decoded.total_coverage, 0.96)
+        self.assertAlmostEqual(decoded.target_coverage, 0.95)
+        self.assertAlmostEqual(decoded.total_time, 542.3)
+        self.assertEqual(decoded.rovers_dispatched, 2)
+        self.assertEqual(decoded.dispatch_cycles, 4)
+
+    def test_mission_request_with_coverage_goal(self):
+        """MissionRequest: coverage_goal field should survive round-trip."""
+        coverage_goal = CoverageGoal(
+            target_coverage=0.90,
+            sector="NW",
+            sector_bounds=(-5.0, 0.0, 0.0, 5.0),
+            max_exploration_time=240.0
+        )
+        original = MissionRequest(
+            task="coverage",
+            coverage_goal=coverage_goal,
+            return_to_dock=True
+        )
+        encoded = encode(original)
+        decoded = decode(encoded, MissionRequest)
+
+        self.assertIsNotNone(decoded)
+        self.assertEqual(decoded.task, "coverage")
+        self.assertIsNotNone(decoded.coverage_goal)
+        self.assertAlmostEqual(decoded.coverage_goal.target_coverage, 0.90)
+        self.assertEqual(decoded.coverage_goal.sector, "NW")
+        # JSON converts tuples to lists, so compare as lists
+        self.assertEqual(list(decoded.coverage_goal.sector_bounds), [-5.0, 0.0, 0.0, 5.0])
 
 
 if __name__ == '__main__':

@@ -25,7 +25,7 @@ import logging
 import random
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Dict
 
 # --- Third-party (ROS2) ---
 from std_msgs.msg import String
@@ -311,16 +311,28 @@ class WaypointResult:
 class MissionRequest:
     """Top-level mission request from user to dock.
 
-    Can be a simple task string or a waypoint-based exploration mission.
+    Supports three modes:
+    - task="explore" with waypoints: Waypoint-based exploration
+    - task="coverage" with coverage_goal: Autonomous coverage exploration
+    - task="explore" without waypoints: Legacy frontier exploration (single rover)
     """
 
-    task: str  # "explore" for waypoint missions, or other task types
-    waypoints: Optional[List['Waypoint']] = None  # List of Waypoint objects
-    return_to_dock: bool = True  # Whether to return after completing waypoints
+    task: str  # "explore", "coverage", or other task types
+    waypoints: Optional[List['Waypoint']] = None  # List of Waypoint objects (waypoint mode)
+    coverage_goal: Optional['CoverageGoal'] = None  # Coverage exploration goal (coverage mode)
+    return_to_dock: bool = True  # Whether to return after completing mission
 
     def __post_init__(self):
         if self.waypoints is None:
             self.waypoints = []
+
+    def is_coverage_mission(self) -> bool:
+        """Check if this is a coverage-based mission."""
+        return self.task == "coverage" and self.coverage_goal is not None
+
+    def is_waypoint_mission(self) -> bool:
+        """Check if this is a waypoint-based mission."""
+        return self.task == "explore" and len(self.waypoints) > 0
 
 
 @dataclass
@@ -386,6 +398,87 @@ class BidProposal:
     cost: float = 999.0  # Lower = better (default: high cost if not specified)
     can_execute: bool = True  # False if module cannot execute this task
     reason: str = ""   # Explanation if can_execute is False
+
+
+# ------------------------
+# --- Coverage Exploration ---
+# ------------------------
+@dataclass
+class CoverageGoal:
+    """High-level coverage exploration goal sent from dock to rover.
+
+    Instead of explicit waypoints, the rover autonomously explores
+    using frontier-based exploration until coverage target is met
+    or constraints are hit (time, battery).
+    """
+
+    target_coverage: float = 0.95  # 0.0-1.0 target coverage fraction
+    sector: Optional[str] = None   # "NE", "NW", "SE", "SW", or None for all
+    sector_bounds: Optional[Tuple[float, float, float, float]] = None  # (x_min, y_min, x_max, y_max)
+    max_exploration_time: float = 300.0  # seconds before mandatory return
+    return_on_low_battery: bool = True   # honor battery threshold
+    battery_return_threshold: float = 0.20  # return when battery < 20%
+
+
+@dataclass
+class CoverageStatus:
+    """Periodic status update during coverage exploration.
+
+    Sent from rover to dock at regular intervals to report progress.
+    """
+
+    module_id: str
+    current_coverage: float = 0.0      # 0.0-1.0 cells explored / total in sector
+    battery_remaining: float = 1.0     # 0.0-1.0
+    distance_traveled: float = 0.0     # meters since mission start
+    frontiers_remaining: int = 0       # number of unexplored frontiers
+    returning_to_dock: bool = False    # True if heading back
+    reason: str = ""                   # Why returning (battery, coverage, timeout, no_frontiers)
+
+
+@dataclass
+class BatteryConfig:
+    """Battery simulation configuration."""
+
+    initial_level: float = 1.0           # Start at 100%
+    drain_per_meter: float = 0.005       # 0.5% per meter traveled
+    drain_per_second_idle: float = 0.0001  # 0.01% per second when idle
+    return_threshold: float = 0.20       # Return when below 20%
+    critical_threshold: float = 0.05     # Emergency stop below 5%
+    recharge_rate: float = 0.10          # 10% per second at dock
+
+
+@dataclass
+class CoverageConfig:
+    """Coverage exploration configuration."""
+
+    default_target: float = 0.95         # 95% coverage target
+    max_mission_time: float = 600.0      # 10 minutes max
+    status_update_interval: float = 5.0  # Update every 5 seconds
+    sector_overlap: float = 0.10         # 10% overlap between sectors
+    min_sector_size: float = 25.0        # Minimum 25 sq meters per sector
+
+
+@dataclass
+class Sector:
+    """A sector of the exploration area assigned to a rover."""
+
+    name: str                            # "NE", "NW", "SE", "SW", or custom
+    bounds: Tuple[float, float, float, float]  # (x_min, y_min, x_max, y_max)
+    assigned_to: Optional[str] = None    # module_id if assigned
+    coverage: float = 0.0                # 0.0-1.0 current coverage
+
+
+@dataclass
+class CoverageMissionComplete:
+    """Final report when coverage mission ends."""
+
+    success: bool = True
+    total_coverage: float = 0.0          # Final global coverage achieved
+    target_coverage: float = 0.95        # What we were trying to achieve
+    total_time: float = 0.0              # Total mission time in seconds
+    rovers_dispatched: int = 0           # How many rovers participated
+    dispatch_cycles: int = 0             # How many re-dispatch cycles
 
 
 # ------------------------
@@ -522,3 +615,36 @@ def bid_proposal_encode(bp: BidProposal) -> str:
 def bid_proposal_decode(msg: String) -> Optional[BidProposal]:
     """Decode BidProposal from ROS String message."""
     return _generic_decode(msg, BidProposal)
+
+
+# COVERAGE_GOAL
+def coverage_goal_encode(cg: CoverageGoal) -> str:
+    """Encode CoverageGoal to JSON string."""
+    return _generic_encode(cg)
+
+
+def coverage_goal_decode(msg: String) -> Optional[CoverageGoal]:
+    """Decode CoverageGoal from ROS String message."""
+    return _generic_decode(msg, CoverageGoal)
+
+
+# COVERAGE_STATUS
+def coverage_status_encode(cs: CoverageStatus) -> str:
+    """Encode CoverageStatus to JSON string."""
+    return _generic_encode(cs)
+
+
+def coverage_status_decode(msg: String) -> Optional[CoverageStatus]:
+    """Decode CoverageStatus from ROS String message."""
+    return _generic_decode(msg, CoverageStatus)
+
+
+# COVERAGE_MISSION_COMPLETE
+def coverage_mission_complete_encode(cmc: CoverageMissionComplete) -> str:
+    """Encode CoverageMissionComplete to JSON string."""
+    return _generic_encode(cmc)
+
+
+def coverage_mission_complete_decode(msg: String) -> Optional[CoverageMissionComplete]:
+    """Decode CoverageMissionComplete from ROS String message."""
+    return _generic_decode(msg, CoverageMissionComplete)

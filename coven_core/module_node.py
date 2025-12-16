@@ -51,7 +51,11 @@ from coven_interfaces.action import ExecuteTask
 
 # --- Local (COVEN) ---
 import coven_core.common as common
-from coven_core.common import ModuleState, BidNotice, BidProposal, Waypoint, WaypointResult
+from coven_core.common import (
+    ModuleState, BidNotice, BidProposal, Waypoint, WaypointResult,
+    CoverageGoal, CoverageStatus, BatteryConfig, MissionRequest
+)
+from coven_core.serialization import encode, decode
 from coven_core.exploration import Explorer
 from coven_core.config import get_config
 from coven_core.module.bidding import BidCalculator
@@ -175,6 +179,12 @@ class Module(Node):
 
         # Module ready announcement (triggers immediate IDENTIFY from dock)
         self.pub_module_ready = self.create_publisher(String, '/coven/module_ready', 10)
+
+        # Coverage exploration status (periodic updates during coverage missions)
+        self.pub_coverage_status = self.create_publisher(String, '/coven/coverage_status', 10)
+        self._coverage_status_timer = None  # Timer for periodic status updates
+        self._coverage_mission_start_time = 0.0  # Track mission duration
+        self._coverage_distance_traveled = 0.0  # Track distance for battery drain
 
         # Direct velocity control (fallback when Nav2 not available)
         # Uses /cmd_vel which bridges to Gazebo's /model/witch_1/cmd_vel
@@ -506,14 +516,29 @@ class Module(Node):
         metrics = {}
 
         try:
-            # Check if this is a JSON waypoint mission
+            # Check if this is a JSON mission (waypoint or coverage)
             is_waypoint_mission = False
+            is_coverage_mission = False
             mission_data = None
+            coverage_goal = None
+
             if task_name.startswith("{"):
                 try:
                     mission_data = json.loads(task_name)
                     if mission_data.get("task") == "explore" and "waypoints" in mission_data:
                         is_waypoint_mission = True
+                    elif mission_data.get("task") == "coverage" and "coverage_goal" in mission_data:
+                        is_coverage_mission = True
+                        # Decode coverage goal from mission data
+                        cg = mission_data["coverage_goal"]
+                        coverage_goal = CoverageGoal(
+                            target_coverage=cg.get("target_coverage", 0.95),
+                            sector=cg.get("sector"),
+                            sector_bounds=tuple(cg["sector_bounds"]) if cg.get("sector_bounds") else None,
+                            max_exploration_time=cg.get("max_exploration_time", 300.0),
+                            return_on_low_battery=cg.get("return_on_low_battery", True),
+                            battery_return_threshold=cg.get("battery_return_threshold", 0.20),
+                        )
                 except json.JSONDecodeError:
                     pass
 
@@ -521,6 +546,39 @@ class Module(Node):
                 # Execute waypoint-based exploration mission
                 success, metrics = self._execute_waypoint_mission(mission_data)
                 map_data_b64, map_yaml_b64 = "", ""  # Maps captured during navigation
+
+            elif is_coverage_mission:
+                # Execute coverage-based autonomous exploration
+                # Initialize navigation first
+                if not self.navigator:
+                    try:
+                        self._initialize_navigation()
+                    except RuntimeError as e:
+                        self.get_logger().error(f"Navigation initialization failed: {e}")
+                        self._stop_task_watchdog()
+                        self.state = ModuleState.NORMAL
+                        self.start_heartbeat()
+                        tc = common.TaskComplete(
+                            module_id=self.module_id,
+                            task=task_name,
+                            success=False,
+                            note="Nav2 not available for coverage mission",
+                            map_data="",
+                            map_yaml="",
+                            exploration_metrics={}
+                        )
+                        self.pub_task_complete.publish(String(data=common.task_complete_encode(tc)))
+                        return
+
+                # Store dock position
+                self.dock_pose = self._get_current_pose()
+                self._publish_dock_transform(self.dock_pose)
+
+                # Execute coverage mission
+                success, metrics = self._execute_coverage_mission(coverage_goal)
+
+                # Save and serialize map
+                map_data_b64, map_yaml_b64 = self._save_and_serialize_map()
 
             elif "explore" in task_name.lower():
                 # Initialize navigation if not already done
@@ -1110,6 +1168,316 @@ class Module(Node):
         except Exception as e:
             self.get_logger().error(f"Return to position failed: {e}")
             return False
+
+    # ------------------------
+    # COVERAGE MISSION EXECUTOR
+    # ------------------------
+    def _execute_coverage_mission(self, goal: CoverageGoal) -> tuple:
+        """
+        Execute autonomous coverage exploration mission.
+
+        Uses frontier-based exploration with battery monitoring.
+        Rover explores until one of these conditions:
+        - Target coverage achieved
+        - Battery below threshold
+        - Time limit exceeded
+        - No more frontiers found
+
+        Args:
+            goal: CoverageGoal with target coverage, sector bounds, time limit, etc.
+
+        Returns:
+            Tuple of (success: bool, metrics: dict)
+        """
+        self.get_logger().info(
+            f"Starting coverage mission: target={goal.target_coverage:.0%}, "
+            f"sector={goal.sector or 'ALL'}, max_time={goal.max_exploration_time}s"
+        )
+
+        # Initialize tracking
+        self._coverage_mission_start_time = time.time()
+        self._coverage_distance_traveled = 0.0
+        last_pose = self._get_current_pose()
+        return_reason = ""
+
+        # Metrics to return
+        metrics = {
+            "coverage": 0.0,
+            "distance": 0.0,
+            "frontiers_explored": 0,
+            "battery_start": self.hw.get_battery_percentage() if self.hw else 1.0,
+            "battery_end": 0.0,
+            "return_reason": "",
+            "sector": goal.sector or "ALL",
+        }
+
+        # Start periodic status updates (every 5 seconds)
+        self._start_coverage_status_updates(goal)
+
+        try:
+            frontier_failures = 0
+            max_frontier_failures = self.get_parameter('exploration.no_frontier_limit').value
+
+            while True:
+                # Check termination conditions
+                elapsed = time.time() - self._coverage_mission_start_time
+
+                # 1. Time limit
+                if elapsed >= goal.max_exploration_time:
+                    return_reason = "timeout"
+                    self.get_logger().info(f"Coverage mission timeout after {elapsed:.0f}s")
+                    break
+
+                # 2. Battery threshold
+                if goal.return_on_low_battery and self.hw:
+                    battery = self.hw.get_battery_percentage()
+                    if battery < goal.battery_return_threshold:
+                        return_reason = "low_battery"
+                        self.get_logger().info(
+                            f"Low battery ({battery:.0%}) - returning to dock"
+                        )
+                        break
+
+                # 3. Coverage target (check from explorer)
+                if self.explorer:
+                    current_coverage = self.explorer.get_coverage()
+                    metrics["coverage"] = current_coverage
+                    if current_coverage >= goal.target_coverage:
+                        return_reason = "coverage_achieved"
+                        self.get_logger().info(
+                            f"Coverage target achieved: {current_coverage:.1%}"
+                        )
+                        break
+
+                # 4. Find next frontier (with optional sector bounds)
+                frontier = self._find_frontier_in_sector(goal.sector_bounds)
+
+                if frontier is None:
+                    frontier_failures += 1
+                    self.get_logger().info(
+                        f"No frontier found ({frontier_failures}/{max_frontier_failures})"
+                    )
+                    if frontier_failures >= max_frontier_failures:
+                        return_reason = "no_frontiers"
+                        self.get_logger().info("No more frontiers - exploration complete")
+                        break
+                    time.sleep(1.0)  # Brief pause before retry
+                    continue
+
+                frontier_failures = 0  # Reset on success
+
+                # Navigate to frontier with distance tracking
+                nav_success, distance = self._navigate_to_frontier(frontier)
+                self._coverage_distance_traveled += distance
+                metrics["distance"] = self._coverage_distance_traveled
+
+                # Drain battery based on distance
+                if self.hw and distance > 0:
+                    self.hw.drain_battery(distance)
+
+                # Update pose for next iteration
+                current_pose = self._get_current_pose()
+                last_pose = current_pose
+
+                if nav_success:
+                    metrics["frontiers_explored"] += 1
+                else:
+                    self.get_logger().warn("Failed to reach frontier, trying next")
+
+        finally:
+            # Stop status updates
+            self._stop_coverage_status_updates()
+
+        # Record final metrics
+        metrics["battery_end"] = self.hw.get_battery_percentage() if self.hw else 1.0
+        metrics["return_reason"] = return_reason
+
+        # Publish final status before returning
+        self._publish_coverage_status(
+            metrics["coverage"],
+            metrics["battery_end"],
+            returning=True,
+            reason=return_reason
+        )
+
+        # Return to dock
+        if self.dock_pose:
+            self.get_logger().info("Returning to dock...")
+            dock_x = self.dock_pose.pose.position.x
+            dock_y = self.dock_pose.pose.position.y
+            return_success = self._return_to_position(dock_x, dock_y, self.dock_pose)
+
+            if return_success and self.hw:
+                # Recharge battery when docked
+                self.hw.charge_battery(0.5)  # Partial recharge
+                self.get_logger().info(
+                    f"Docked. Battery recharged to {self.hw.get_battery_percentage():.0%}"
+                )
+
+        success = return_reason in ["coverage_achieved", "timeout", "no_frontiers"]
+        return success, metrics
+
+    def _find_frontier_in_sector(self, sector_bounds: tuple = None):
+        """
+        Find the best frontier, optionally filtered to sector bounds.
+
+        Uses information gain / distance scoring per best practices.
+
+        Args:
+            sector_bounds: Optional (x_min, y_min, x_max, y_max) to filter frontiers
+
+        Returns:
+            Best frontier point or None if no frontiers found
+        """
+        if not self.explorer:
+            return None
+
+        # Get all frontiers from explorer
+        frontiers = self.explorer.find_frontiers()
+        if not frontiers:
+            return None
+
+        # Filter to sector if specified
+        if sector_bounds:
+            x_min, y_min, x_max, y_max = sector_bounds
+            frontiers = [
+                f for f in frontiers
+                if x_min <= f.x <= x_max and y_min <= f.y <= y_max
+            ]
+            if not frontiers:
+                self.get_logger().debug(f"No frontiers in sector {sector_bounds}")
+                return None
+
+        # Score frontiers by info gain / distance (best practice)
+        robot_pose = self._get_current_pose()
+        robot_x = robot_pose.pose.position.x
+        robot_y = robot_pose.pose.position.y
+
+        scored = []
+        for f in frontiers:
+            dist = math.sqrt((f.x - robot_x)**2 + (f.y - robot_y)**2)
+            if dist < 0.1:
+                dist = 0.1  # Avoid division by zero
+
+            # Info gain approximated by frontier size (already filtered by explorer)
+            info_gain = getattr(f, 'size', 10)  # Default size if not available
+            score = info_gain / dist
+
+            scored.append((f, score))
+
+        # Sort by score (highest first)
+        scored.sort(key=lambda x: x[1], reverse=True)
+        return scored[0][0]
+
+    def _navigate_to_frontier(self, frontier) -> tuple:
+        """
+        Navigate to a frontier point with distance tracking.
+
+        Args:
+            frontier: Frontier point with x, y coordinates
+
+        Returns:
+            Tuple of (success: bool, distance_traveled: float)
+        """
+        start_pose = self._get_current_pose()
+        start_x = start_pose.pose.position.x
+        start_y = start_pose.pose.position.y
+
+        # Create target pose
+        target_pose = PoseStamped()
+        target_pose.header.frame_id = 'map'
+        target_pose.header.stamp = self.get_clock().now().to_msg()
+        target_pose.pose.position.x = frontier.x
+        target_pose.pose.position.y = frontier.y
+        target_pose.pose.position.z = 0.0
+
+        # Calculate orientation towards target
+        dx = frontier.x - start_x
+        dy = frontier.y - start_y
+        target_yaw = math.atan2(dy, dx)
+        target_pose.pose.orientation = self._yaw_to_quaternion(target_yaw)
+
+        try:
+            self.navigator.goToPose(target_pose)
+
+            # Wait for completion with timeout
+            nav_timeout = self.get_parameter('exploration.nav_timeout').value
+            start_time = time.time()
+
+            while not self.navigator.isTaskComplete():
+                if time.time() - start_time > nav_timeout:
+                    self.get_logger().warn("Navigation timeout")
+                    self.navigator.cancelTask()
+                    break
+                time.sleep(0.1)
+
+            # Calculate distance traveled
+            end_pose = self._get_current_pose()
+            end_x = end_pose.pose.position.x
+            end_y = end_pose.pose.position.y
+            distance = math.sqrt((end_x - start_x)**2 + (end_y - start_y)**2)
+
+            result = self.navigator.getResult()
+            success = result.value == 1  # SUCCEEDED
+
+            return success, distance
+
+        except Exception as e:
+            self.get_logger().error(f"Frontier navigation failed: {e}")
+            return False, 0.0
+
+    def _start_coverage_status_updates(self, goal: CoverageGoal):
+        """Start periodic coverage status publishing."""
+        if self._coverage_status_timer:
+            self._coverage_status_timer.cancel()
+
+        # Publish every 5 seconds
+        interval = 5.0
+        self._coverage_status_timer = self.create_timer(
+            interval,
+            lambda: self._publish_coverage_status_periodic(goal)
+        )
+
+    def _stop_coverage_status_updates(self):
+        """Stop periodic coverage status publishing."""
+        if self._coverage_status_timer:
+            self._coverage_status_timer.cancel()
+            self._coverage_status_timer = None
+
+    def _publish_coverage_status_periodic(self, goal: CoverageGoal):
+        """Periodic callback to publish coverage status."""
+        coverage = self.explorer.get_coverage() if self.explorer else 0.0
+        battery = self.hw.get_battery_percentage() if self.hw else 1.0
+        self._publish_coverage_status(coverage, battery, returning=False, reason="exploring")
+
+    def _publish_coverage_status(
+        self,
+        coverage: float,
+        battery: float,
+        returning: bool = False,
+        reason: str = ""
+    ):
+        """Publish coverage status update to dock."""
+        frontiers = len(self.explorer.find_frontiers()) if self.explorer else 0
+
+        status = CoverageStatus(
+            module_id=self.module_id,
+            current_coverage=coverage,
+            battery_remaining=battery,
+            distance_traveled=self._coverage_distance_traveled,
+            frontiers_remaining=frontiers,
+            returning_to_dock=returning,
+            reason=reason
+        )
+
+        self.pub_coverage_status.publish(
+            String(data=common.coverage_status_encode(status))
+        )
+
+        self.get_logger().debug(
+            f"Coverage status: {coverage:.1%} coverage, {battery:.0%} battery, "
+            f"{frontiers} frontiers, returning={returning}"
+        )
 
     # ------------------------
     # ACTION SERVER CALLBACKS

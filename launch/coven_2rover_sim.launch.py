@@ -537,7 +537,7 @@ def write_main_script(
 # COVEN 2-Rover Simulation - Main Script
 # Proper lifecycle-based startup: Nav2 starts inactive, activated after SLAM ready
 #
-# Startup Chain (per ChatGPT/Nav2 best practices):
+# Startup Chain (per Nav2 best practices):
 #   Phase A: Gazebo only (wait for /clock, /odom, /scan)
 #   Phase B: Core robot + TF (bridges, odom_tf_broadcaster, static TF)
 #   Phase C: SLAM only (wait for /map topic + map->odom TF)
