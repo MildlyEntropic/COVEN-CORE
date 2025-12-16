@@ -19,5 +19,16 @@ install(
   DESTINATION share/${PROJECT_NAME}/models
 )
 
+# --- Install config files (nav2, slam, coven params) ---
+install(
+  DIRECTORY config/
+  DESTINATION share/${PROJECT_NAME}/config
+)
+
+# --- Install world files ---
+install(
+  DIRECTORY worlds/
+  DESTINATION share/${PROJECT_NAME}/worlds
+)
 
 ament_package()

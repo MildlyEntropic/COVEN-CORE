@@ -94,26 +94,31 @@ class Dock(Node):
         self.map_storage_dir = os.path.expanduser(self.get_parameter('map_storage_dir').value)
         os.makedirs(self.map_storage_dir, exist_ok=True)
 
-        # ROS Topics
-        self.pub_ident_req = self.create_publisher(String, 'coven/identify_req', 10)
-        self.sub_ident_rep = self.create_subscription(String, 'coven/identify_rep', self.on_ident_rep, 10)
+        # ROS Topics - Use absolute paths (/coven/...) so they work globally
+        # regardless of node namespace. This allows non-namespaced dock to communicate
+        # with namespaced module nodes.
+        self.pub_ident_req = self.create_publisher(String, '/coven/identify_req', 10)
+        self.sub_ident_rep = self.create_subscription(String, '/coven/identify_rep', self.on_ident_rep, 10)
 
-        self.pub_verify_req = self.create_publisher(String, 'coven/verify_req', 10)
-        self.sub_verify_rep = self.create_subscription(String, 'coven/verify_rep', self.on_verify_rep, 10)
+        self.pub_verify_req = self.create_publisher(String, '/coven/verify_req', 10)
+        self.sub_verify_rep = self.create_subscription(String, '/coven/verify_rep', self.on_verify_rep, 10)
 
-        self.pub_enable_12v = self.create_publisher(String, 'coven/enable_12v', 10)
-        self.sub_hb = self.create_subscription(String, 'coven/heartbeat', self.on_hb, 10)
+        self.pub_enable_12v = self.create_publisher(String, '/coven/enable_12v', 10)
+        self.sub_hb = self.create_subscription(String, '/coven/heartbeat', self.on_hb, 10)
 
-        self.sub_mission_req = self.create_subscription(String, 'coven/mission_req', self.on_mission_req, 10)
-        self.sub_task_ack = self.create_subscription(String, 'coven/task_ack', self.on_task_ack, 10)
-        self.sub_task_start = self.create_subscription(String, 'coven/task_start', self.on_task_start, 10)
-        self.sub_task_complete = self.create_subscription(String, 'coven/task_complete', self.on_task_complete, 10)
+        self.sub_mission_req = self.create_subscription(String, '/coven/mission_req', self.on_mission_req, 10)
+        self.sub_task_ack = self.create_subscription(String, '/coven/task_ack', self.on_task_ack, 10)
+        self.sub_task_start = self.create_subscription(String, '/coven/task_start', self.on_task_start, 10)
+        self.sub_task_complete = self.create_subscription(String, '/coven/task_complete', self.on_task_complete, 10)
 
-        self.pub_task_req = self.create_publisher(String, 'coven/task_req', 10)
+        self.pub_task_req = self.create_publisher(String, '/coven/task_req', 10)
 
         # Bidding system topics
-        self.pub_bid_notice = self.create_publisher(String, 'coven/bid_notice', 10)
-        self.sub_bid_proposal = self.create_subscription(String, 'coven/bid_proposal', self.on_bid_proposal, 10)
+        self.pub_bid_notice = self.create_publisher(String, '/coven/bid_notice', 10)
+        self.sub_bid_proposal = self.create_subscription(String, '/coven/bid_proposal', self.on_bid_proposal, 10)
+
+        # Module ready announcements (immediate IDENTIFY response)
+        self.sub_module_ready = self.create_subscription(String, '/coven/module_ready', self.on_module_ready, 10)
 
         self.ident_timer = self.create_timer(self.ident_period, self.broadcast_identify)
         self.hb_timer = self.create_timer(0.5, self.flush_heartbeat_log)
@@ -126,6 +131,17 @@ class Dock(Node):
     # ------------------------
     # IDENTIFY / VERIFY
     # ------------------------
+    def on_module_ready(self, msg: String):
+        """Handle module ready announcement - send immediate IDENTIFY_REQ."""
+        try:
+            data = json.loads(msg.data)
+            module_id = data.get("module_id", "unknown")
+            self.get_logger().info(f"Module '{module_id}' announced ready — sending IDENTIFY_REQ")
+            # Send immediate IDENTIFY to this module
+            self.broadcast_identify()
+        except json.JSONDecodeError:
+            self.get_logger().warn("Invalid module_ready message format")
+
     def broadcast_identify(self):
         req = common.IdentifyReq(req_id="dock_broadcast")
         self.pub_ident_req.publish(String(data=common.ident_req_encode(req)))
@@ -217,9 +233,10 @@ class Dock(Node):
     # ------------------------
     def on_mission_req(self, msg: String):
         """Handle incoming mission request by starting an auction."""
+        self.get_logger().info(f"{COLOR_GREEN}Mission request received: {msg.data[:100]}...{COLOR_RESET}")
         req = common.mission_req_decode(msg)
         if not req or not req.task:
-            self.get_logger().warn("Received invalid mission request.")
+            self.get_logger().warn(f"Received invalid mission request. req={req}, task={req.task if req else 'None'}")
             return
 
         # Check if any modules are available
@@ -233,9 +250,20 @@ class Dock(Node):
             self.get_logger().warn("No available modules to bid on mission.")
             return
 
+        # For waypoint missions, encode waypoints into task data
+        if req.task == "explore" and req.waypoints:
+            waypoint_count = len(req.waypoints)
+            self.get_logger().info(
+                f"{COLOR_GREEN}Received exploration mission with {waypoint_count} waypoints{COLOR_RESET}"
+            )
+            # Encode full mission as JSON task string for module
+            task_data = common.mission_req_encode(req)
+        else:
+            task_data = req.task
+
         # Start an auction for this task
         task_id = f"task_{uuid.uuid4().hex[:8]}"
-        self._start_auction(task_id, req.task)
+        self._start_auction(task_id, task_data)
 
     def _start_auction(self, task_id: str, task: str):
         """Broadcast a BidNotice and start deadline timer."""

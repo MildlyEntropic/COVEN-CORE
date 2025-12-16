@@ -54,26 +54,23 @@ source install/setup.bash
 
 ## Simulation
 
-Launch a complete multi-robot simulation with Gazebo, SLAM, Nav2, and COVEN:
+Launch the COVEN native simulation with Gazebo:
 
 ```bash
-# Single robot (default)
-ros2 launch coven_core coven_multi_sim.launch.py
+# Full simulation with GUI
+ros2 launch coven_core coven_sim.launch.py
 
-# Multiple robots
-ros2 launch coven_core coven_multi_sim.launch.py num_robots:=3
-
-# Different world
-ros2 launch coven_core coven_multi_sim.launch.py num_robots:=2 world:=depot
+# Headless (no GUI, for CI/testing)
+ros2 launch coven_core coven_sim.launch.py headless:=true
 ```
 
 This starts:
-- Gazebo simulation (warehouse environment)
-- One COVEN dock node
-- N TurtleBot4 robots with SLAM + Nav2
-- N COVEN module nodes (one per robot)
+- Gazebo simulation (coven_test world)
+- COVEN rover (witch_1) with LIDAR and diff-drive
+- ros_gz_bridge (clock, TF, odom, LIDAR, cmd_vel)
+- COVEN dock + module nodes
 
-Each robot operates in its own namespace (`/robot_1/`, `/robot_2/`, etc.) while COVEN protocol topics remain global (`/coven/*`).
+Each robot operates in its own namespace (e.g., `/witch_1/`) while COVEN protocol topics remain global (`/coven/*`).
 
 ---
 
@@ -203,11 +200,11 @@ sudo apt install ros-humble-desktop python3-pytest
 ```
 
 ### Simulation (For `coven sim`)
+
 ```bash
 sudo apt install \
-  ros-humble-nav2-bringup \
-  ros-humble-slam-toolbox \
-  ros-humble-turtlebot4-simulator
+  ros-jazzy-ros-gz \
+  ros-jazzy-robot-state-publisher
 ```
 
 ---
@@ -275,6 +272,84 @@ COVERAGE_THRESHOLD = 0.8  # Target map coverage (80%)
 
 ---
 
+## Roadmap
+
+The core premise: **land the dock once, send modules incrementally**. The dock is permanent infrastructure - the reusable brain that outlives individual modules. Modules are cheaper, expendable, and can be sent over multiple missions as capabilities expand.
+
+### COVEN 1.x (Current)
+
+- ReconRover proof-of-concept with LIDAR
+- Single-dock coordination
+- Competitive bidding with battery/position factors
+- Frontier-based exploration
+
+### COVEN 2.x
+
+- **Specialized Module Types** (same dock, new module types over time)
+  - SpectrometerRover - Spectral analysis missions
+  - DrillRover - Sample collection
+  - CargoRover - Material transport
+  - RelayRover - Communications extension
+- Task-type matching (modules bid based on capability fit)
+- Battery-aware scheduling (low battery = higher bid cost)
+
+### COVEN 3.x
+
+- **Multi-Dock Networks** (second dock landing expands coverage)
+  - Dock-to-dock task handoff
+  - Regional coverage zones
+  - Distributed map sharing
+
+### COVEN 4.x
+
+- **Mini-Swarms** (send a squad, not just one rover)
+  - Swarm leaders coordinate sub-teams (5-rover squads)
+  - Formation-based exploration patterns
+  - Sector sweep with overwatch/backup roles
+  - Fault-tolerant sub-task redistribution
+
+### COVEN 5.x
+
+- **Heterogeneous Swarm Coordination**
+  - Mixed swarms (recon + spectrometer + drill working together)
+  - Dynamic swarm composition based on mission needs
+  - Inter-swarm coordination for large-scale operations
+
+---
+
+## Why COVEN?
+
+### The Problem
+
+Planetary robotics operates like hand-building Model Ts. Mars 2020 cost $2.7 billion for one rover. When Perseverance dies, that investment becomes space debris. Every mission requires:
+
+- **Bespoke hardware** - custom-designed from scratch
+- **Decade-long development** - 10+ years from proposal to launch
+- **Single points of failure** - one rover, one chance
+- **Wasted careers** - scientists spend lifetimes on logistics instead of discovery
+
+A planetary scientist might dedicate their entire 40-year career to one mission: a decade writing proposals, another waiting for launch, five years of data collection, then retirement. One career. One rover. One dataset.
+
+### The Solution
+
+COVEN treats the dock as **permanent infrastructure** - the reusable brain that outlives individual modules. Instead of building a new spacecraft for each mission, you:
+
+1. **Land the dock once** - permanent coordination infrastructure
+2. **Send modules incrementally** - cheaper, expendable, specialized
+3. **Accumulate capability over time** - each mission adds tools to the fleet
+
+The same dock that coordinates a single ReconRover in 2026 can coordinate a fleet of spectrometers, drills, and cargo haulers in 2036 - without redesign.
+
+### The Insight
+
+We're not inventing new technology. Autonomous navigation works (Nav2). Docking is nearly solved (RoSE, opennav_docking). Multi-robot coordination works (CADRE). 3D printing in space is funded research (NASA ISRU). The components exist.
+
+What's missing is the **integration architecture** - the assembly line that connects existing components into something scalable. COVEN is that architecture.
+
+**The goal:** Transform planetary robotics from artisanal craftsmanship into infrastructure-as-a-service. A scientist submits a task request. A week later, they have data. They iterate. They actually do science.
+
+---
+
 ## Research Context
 
 COVEN addresses the "coordination gap" in planetary robotics - the absence of a standardized protocol enabling heterogeneous robots to work together without mission-specific pre-configuration.
@@ -285,6 +360,7 @@ COVEN addresses the "coordination gap" in planetary robotics - the absence of a 
 - RIMRES (Cordes et al., 2010) - Reconfigurable multi-robot systems
 - Nav2 (Macenski et al., 2020) - Autonomous navigation
 - Frontier Exploration (Yamauchi, 1997) - Autonomous mapping
+- RoSE (Zhu et al., Colorado School of Mines) - Autonomous redocking
 
 ---
 

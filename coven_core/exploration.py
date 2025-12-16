@@ -91,9 +91,8 @@ class Explorer:
         tf_node = navigator if robot_namespace else node
         self.tf_listener = TransformListener(self.tf_buffer, tf_node)
 
-        # Frame names are NOT prefixed - TurtleBot4 uses plain names
-        # The namespace isolation happens via TF topic (/robot_1/tf)
-        self.base_frame = "base_link"
+        # For multi-robot setups, frame names ARE namespaced (e.g., Akko/base_link)
+        self.base_frame = f"{robot_namespace}/base_link" if robot_namespace else "base_link"
         self.map_frame = "map"
 
         # Subscribe to map updates from SLAM

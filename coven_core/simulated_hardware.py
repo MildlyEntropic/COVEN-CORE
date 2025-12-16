@@ -8,6 +8,7 @@ Date: November 2025
 """
 
 import logging
+import random
 from typing import Optional
 from .hardware_interface import HardwareInterface
 
@@ -18,22 +19,30 @@ logger = logging.getLogger(__name__)
 class SimulatedHardware(HardwareInterface):
     """Simulated hardware for Gazebo and testing environments."""
 
-    def __init__(self, module_id: Optional[str] = None):
+    def __init__(self, module_id: Optional[str] = None, randomize_battery: bool = True):
         """
         Initialize simulated hardware.
 
         Args:
             module_id: Optional module ID (generated if not provided)
+            randomize_battery: If True, start with random battery (60-100%)
         """
         self.module_id = module_id
         self.power_voltage = 5  # Start at 5V
         self.is_docked = True
-        self.battery_voltage = 12.6  # Fully charged Li-ion (3S)
-        self.battery_percentage = 1.0
         self.servo_positions = {}
         self.gpio_states = {}
 
-        logger.info("Simulated hardware initialized")
+        # Randomize starting battery for realistic bidding simulation
+        if randomize_battery:
+            self.battery_percentage = random.uniform(0.6, 1.0)
+        else:
+            self.battery_percentage = 1.0
+
+        # Battery voltage scales with percentage (3S Li-ion: 9.6V empty, 12.6V full)
+        self.battery_voltage = 9.6 + (self.battery_percentage * 3.0)
+
+        logger.info(f"Simulated hardware initialized (battery: {self.battery_percentage*100:.0f}%)")
 
     def enable_power_rail(self, voltage: int) -> bool:
         """Enable power rail to specified voltage."""
@@ -77,6 +86,31 @@ class SimulatedHardware(HardwareInterface):
     def get_battery_percentage(self) -> float:
         """Get estimated battery state of charge."""
         return self.battery_percentage
+
+    def drain_battery(self, distance_meters: float) -> None:
+        """
+        Simulate battery drain based on distance traveled.
+
+        Args:
+            distance_meters: Distance traveled in meters
+
+        Drain rate: ~2% per 10 meters (rough estimate for small rover)
+        """
+        drain = distance_meters * 0.002  # 0.2% per meter
+        self.battery_percentage = max(0.1, self.battery_percentage - drain)
+        self.battery_voltage = 9.6 + (self.battery_percentage * 3.0)
+        logger.debug(f"Battery drained {drain*100:.1f}% → {self.battery_percentage*100:.0f}%")
+
+    def charge_battery(self, amount: float = 0.1) -> None:
+        """
+        Simulate battery charging while docked.
+
+        Args:
+            amount: Amount to charge (0.0-1.0), default 10%
+        """
+        self.battery_percentage = min(1.0, self.battery_percentage + amount)
+        self.battery_voltage = 9.6 + (self.battery_percentage * 3.0)
+        logger.debug(f"Battery charged → {self.battery_percentage*100:.0f}%")
 
     def control_servo(self, servo_id: int, angle: float) -> bool:
         """Control servo motor position."""

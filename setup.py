@@ -36,7 +36,10 @@ setup(
         ('share/' + package_name, ['package.xml']),
         (os.path.join('share', package_name, 'launch'), glob('launch/*.launch.py')),
         (os.path.join('share', package_name, 'models'), glob('models/*.sdf')),
-        (os.path.join('share', package_name, 'config'), glob('config/*.yaml')),
+        (os.path.join('share', package_name, 'models', 'coven_rover'),
+         glob('models/coven_rover/*')),
+        (os.path.join('share', package_name, 'worlds'), glob('worlds/*.sdf')),
+        (os.path.join('share', package_name, 'config'), glob('config/*.yaml') + glob('config/*.rviz')),
     ],
     install_requires=['setuptools', 'numpy', 'scipy'],
     zip_safe=True,
@@ -53,7 +56,11 @@ setup(
         'console_scripts': [
             'dock = coven_core.dock_node:main',
             'module = coven_core.module_node:main',
+            'coven_dock = coven_core.dock_node:main',
+            'coven_module = coven_core.module_node:main',
             'spawn_module = coven_core.spawn_module:main',
+            'odom_tf_broadcaster = coven_core.odom_tf_broadcaster:main',
+            'scan_frame_republisher = coven_core.scan_frame_republisher:main',
         ],
     },
 )

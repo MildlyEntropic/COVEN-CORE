@@ -1,7 +1,7 @@
 """
-test_rigorous_integration.py — Rigorous COVEN Integration Tests
+test_performance.py — COVEN Performance & Metrics Tests
 
-These tests ACTUALLY validate the system with measurable criteria:
+These tests validate the system with measurable criteria:
 - Performance metrics (latency, throughput)
 - Protocol correctness (full end-to-end validation)
 - Failure mode handling
@@ -94,8 +94,8 @@ class MessageCapture:
             self.timestamps.clear()
 
 
-class TestRigorousIdentification(unittest.TestCase):
-    """Rigorous tests for module identification protocol."""
+class TestIdentification(unittest.TestCase):
+    """Performance tests for module identification protocol."""
 
     @classmethod
     def setUpClass(cls):
@@ -109,7 +109,7 @@ class TestRigorousIdentification(unittest.TestCase):
     def setUp(self):
         self.executor = MultiThreadedExecutor()
         self.dock = Dock()
-        self.module = Module(module_id="RIGOROUS-001", executor=self.executor)
+        self.module = Module(module_id="PERF-001", executor=self.executor)
 
         self.executor.add_node(self.dock)
         self.executor.add_node(self.module)
@@ -184,7 +184,7 @@ class TestRigorousIdentification(unittest.TestCase):
         rep = messages[0]
         self.assertIsNotNone(rep)
         self.assertEqual(rep.req_id, "correctness-test")
-        self.assertEqual(rep.module_id, "RIGOROUS-001")
+        self.assertEqual(rep.module_id, "PERF-001")
         self.assertIsInstance(rep.module_type, str)
         self.assertGreater(len(rep.module_type), 0)
         self.assertIsInstance(rep.fw, str)
@@ -212,8 +212,8 @@ class TestRigorousIdentification(unittest.TestCase):
         print("✓ State transition: BOOT → WAIT_VERIFY")
 
 
-class TestRigorousHeartbeat(unittest.TestCase):
-    """Rigorous tests for heartbeat monitoring."""
+class TestHeartbeat(unittest.TestCase):
+    """Performance tests for heartbeat monitoring."""
 
     @classmethod
     def setUpClass(cls):
@@ -222,7 +222,7 @@ class TestRigorousHeartbeat(unittest.TestCase):
 
     def setUp(self):
         self.executor = MultiThreadedExecutor()
-        self.module = Module(module_id="HB-RIGOROUS", executor=self.executor)
+        self.module = Module(module_id="HB-PERF", executor=self.executor)
         self.executor.add_node(self.module)
 
         # Capture heartbeats
@@ -337,8 +337,8 @@ class TestRigorousHeartbeat(unittest.TestCase):
         print(f"✓ Sequence numbers: {messages[0].seq} → {messages[-1].seq} (monotonic)")
 
 
-class TestRigorousMultiModule(unittest.TestCase):
-    """Rigorous tests for multi-module coordination."""
+class TestMultiModule(unittest.TestCase):
+    """Performance tests for multi-module coordination."""
 
     @classmethod
     def setUpClass(cls):
@@ -449,8 +449,8 @@ class TestRigorousMultiModule(unittest.TestCase):
         print(f"✓ No crosstalk: all {len(unique_ids)} module IDs valid")
 
 
-class TestRigorousPerformance(unittest.TestCase):
-    """Rigorous performance benchmarks."""
+class TestBenchmarks(unittest.TestCase):
+    """System performance benchmarks."""
 
     @classmethod
     def setUpClass(cls):
@@ -466,7 +466,7 @@ class TestRigorousPerformance(unittest.TestCase):
         executor = MultiThreadedExecutor()
 
         start_time = time.time()
-        module = Module(module_id="PERF-001", executor=executor)
+        module = Module(module_id="BENCH-001", executor=executor)
         executor.add_node(module)
 
         executor_thread = threading.Thread(target=executor.spin, daemon=True)
