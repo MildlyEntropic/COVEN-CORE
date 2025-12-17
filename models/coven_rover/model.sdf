@@ -43,7 +43,7 @@ Specs:
       </visual>
 
       <!-- 2D LIDAR sensor -->
-      <!-- Topic omitted to use model-namespaced default. Frame explicitly set for Nav2. -->
+      <!-- gpu_lidar required for LaserScan message type compatibility with ros_gz_bridge -->
       <sensor name="lidar" type="gpu_lidar">
         <pose>0.12 0 0.08 0 0 0</pose>
         <update_rate>10</update_rate>

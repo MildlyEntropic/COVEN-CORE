@@ -34,6 +34,11 @@ from coven_core.common import (
     BidNotice, BidProposal,
     CoverageGoal, CoverageStatus, BatteryConfig, CoverageConfig,
     Sector, CoverageMissionComplete,
+    # Dock-centric messages
+    SimplifiedModuleState,
+    RoverRegistration, RoverRegistrationAck,
+    SensorData, VelocityCommand,
+    RoverStatus, DockCommand,
 )
 
 
@@ -652,6 +657,259 @@ class TestCoverageMessages(unittest.TestCase):
         self.assertEqual(decoded.coverage_goal.sector, "NW")
         # JSON converts tuples to lists, so compare as lists
         self.assertEqual(list(decoded.coverage_goal.sector_bounds), [-5.0, 0.0, 0.0, 5.0])
+
+
+class TestDockCentricMessages(unittest.TestCase):
+    """Test dock-centric architecture message serialization."""
+
+    def test_simplified_module_state_enum(self):
+        """SimplifiedModuleState: enum has expected values."""
+        self.assertEqual(SimplifiedModuleState.BOOT.value, 0)
+        self.assertEqual(SimplifiedModuleState.READY.value, 1)
+        self.assertEqual(SimplifiedModuleState.ACTIVE.value, 2)
+        self.assertEqual(SimplifiedModuleState.ERROR.value, 3)
+
+    def test_rover_registration_roundtrip(self):
+        """RoverRegistration: encode → decode produces identical object."""
+        original = RoverRegistration(
+            module_id="Circe",
+            module_type="lidar_rover",
+            firmware_version="2.1.0",
+            capabilities=["lidar", "odom", "imu"],
+            initial_battery=0.95
+        )
+        encoded = encode(original)
+        decoded = decode(encoded, RoverRegistration)
+
+        self.assertIsNotNone(decoded)
+        self.assertEqual(decoded.module_id, "Circe")
+        self.assertEqual(decoded.module_type, "lidar_rover")
+        self.assertEqual(decoded.firmware_version, "2.1.0")
+        self.assertEqual(decoded.capabilities, ["lidar", "odom", "imu"])
+        self.assertAlmostEqual(decoded.initial_battery, 0.95)
+
+    def test_rover_registration_defaults(self):
+        """RoverRegistration: missing fields should use sensible defaults."""
+        decoded = decode('{"module_id": "TestRover"}', RoverRegistration)
+
+        self.assertIsNotNone(decoded)
+        self.assertEqual(decoded.module_id, "TestRover")
+        self.assertEqual(decoded.module_type, "lidar_rover")
+        self.assertEqual(decoded.firmware_version, "1.0.0")
+        self.assertEqual(decoded.capabilities, ["lidar", "odom"])
+        self.assertAlmostEqual(decoded.initial_battery, 1.0)
+
+    def test_rover_registration_ack_roundtrip(self):
+        """RoverRegistrationAck: encode → decode produces identical object."""
+        original = RoverRegistrationAck(
+            module_id="Circe",
+            accepted=True,
+            assigned_namespace="Circe",
+            reason=""
+        )
+        encoded = encode(original)
+        decoded = decode(encoded, RoverRegistrationAck)
+
+        self.assertIsNotNone(decoded)
+        self.assertEqual(decoded.module_id, "Circe")
+        self.assertTrue(decoded.accepted)
+        self.assertEqual(decoded.assigned_namespace, "Circe")
+        self.assertEqual(decoded.reason, "")
+
+    def test_rover_registration_ack_rejected(self):
+        """RoverRegistrationAck: rejected registration with reason."""
+        original = RoverRegistrationAck(
+            module_id="Unknown",
+            accepted=False,
+            assigned_namespace="",
+            reason="Unknown rover type"
+        )
+        encoded = encode(original)
+        decoded = decode(encoded, RoverRegistrationAck)
+
+        self.assertFalse(decoded.accepted)
+        self.assertEqual(decoded.reason, "Unknown rover type")
+
+    def test_sensor_data_roundtrip(self):
+        """SensorData: encode → decode produces identical object."""
+        original = SensorData(
+            module_id="Hecate",
+            timestamp=1234567890.123,
+            scan_ranges=[1.0, 1.5, 2.0, 2.5, 3.0],
+            scan_angle_min=0.0,
+            scan_angle_max=3.14159,
+            scan_angle_increment=0.0175,
+            odom_x=1.5,
+            odom_y=2.3,
+            odom_theta=0.785,
+            odom_vx=0.2,
+            odom_vtheta=0.1,
+            battery_level=0.82
+        )
+        encoded = encode(original)
+        decoded = decode(encoded, SensorData)
+
+        self.assertIsNotNone(decoded)
+        self.assertEqual(decoded.module_id, "Hecate")
+        self.assertAlmostEqual(decoded.timestamp, 1234567890.123)
+        self.assertEqual(decoded.scan_ranges, [1.0, 1.5, 2.0, 2.5, 3.0])
+        self.assertAlmostEqual(decoded.scan_angle_min, 0.0)
+        self.assertAlmostEqual(decoded.scan_angle_max, 3.14159)
+        self.assertAlmostEqual(decoded.odom_x, 1.5)
+        self.assertAlmostEqual(decoded.odom_y, 2.3)
+        self.assertAlmostEqual(decoded.odom_theta, 0.785)
+        self.assertAlmostEqual(decoded.odom_vx, 0.2)
+        self.assertAlmostEqual(decoded.odom_vtheta, 0.1)
+        self.assertAlmostEqual(decoded.battery_level, 0.82)
+
+    def test_sensor_data_defaults(self):
+        """SensorData: missing fields should use sensible defaults."""
+        decoded = decode('{"module_id": "TestRover"}', SensorData)
+
+        self.assertIsNotNone(decoded)
+        self.assertEqual(decoded.module_id, "TestRover")
+        self.assertAlmostEqual(decoded.timestamp, 0.0)
+        self.assertEqual(decoded.scan_ranges, [])
+        self.assertAlmostEqual(decoded.odom_x, 0.0)
+        self.assertAlmostEqual(decoded.odom_y, 0.0)
+        self.assertAlmostEqual(decoded.battery_level, 1.0)
+
+    def test_sensor_data_large_scan(self):
+        """SensorData: large scan array (360 points) should survive round-trip."""
+        scan_ranges = [float(i % 10) for i in range(360)]
+        original = SensorData(
+            module_id="Scanner",
+            scan_ranges=scan_ranges
+        )
+        encoded = encode(original)
+        decoded = decode(encoded, SensorData)
+
+        self.assertEqual(len(decoded.scan_ranges), 360)
+        self.assertEqual(decoded.scan_ranges[0], 0.0)
+        self.assertEqual(decoded.scan_ranges[9], 9.0)
+        self.assertEqual(decoded.scan_ranges[10], 0.0)
+
+    def test_velocity_command_roundtrip(self):
+        """VelocityCommand: encode → decode produces identical object."""
+        original = VelocityCommand(
+            module_id="Morrigan",
+            linear_x=0.3,
+            angular_z=-0.5,
+            timestamp=1234567890.0,
+            timeout=0.25
+        )
+        encoded = encode(original)
+        decoded = decode(encoded, VelocityCommand)
+
+        self.assertIsNotNone(decoded)
+        self.assertEqual(decoded.module_id, "Morrigan")
+        self.assertAlmostEqual(decoded.linear_x, 0.3)
+        self.assertAlmostEqual(decoded.angular_z, -0.5)
+        self.assertAlmostEqual(decoded.timestamp, 1234567890.0)
+        self.assertAlmostEqual(decoded.timeout, 0.25)
+
+    def test_velocity_command_defaults(self):
+        """VelocityCommand: missing fields should default to stopped."""
+        decoded = decode('{"module_id": "Rover1"}', VelocityCommand)
+
+        self.assertIsNotNone(decoded)
+        self.assertEqual(decoded.module_id, "Rover1")
+        self.assertAlmostEqual(decoded.linear_x, 0.0)
+        self.assertAlmostEqual(decoded.angular_z, 0.0)
+        self.assertAlmostEqual(decoded.timeout, 0.5)
+
+    def test_rover_status_roundtrip(self):
+        """RoverStatus: encode → decode produces identical object."""
+        original = RoverStatus(
+            module_id="Lorelei",
+            state="ACTIVE",
+            battery_level=0.65,
+            is_moving=True,
+            last_cmd_age=0.05,
+            error_msg=""
+        )
+        encoded = encode(original)
+        decoded = decode(encoded, RoverStatus)
+
+        self.assertIsNotNone(decoded)
+        self.assertEqual(decoded.module_id, "Lorelei")
+        self.assertEqual(decoded.state, "ACTIVE")
+        self.assertAlmostEqual(decoded.battery_level, 0.65)
+        self.assertTrue(decoded.is_moving)
+        self.assertAlmostEqual(decoded.last_cmd_age, 0.05)
+        self.assertEqual(decoded.error_msg, "")
+
+    def test_rover_status_error_state(self):
+        """RoverStatus: error state with message should survive round-trip."""
+        original = RoverStatus(
+            module_id="BrokenBot",
+            state="ERROR",
+            battery_level=0.10,
+            is_moving=False,
+            last_cmd_age=5.0,
+            error_msg="Motor driver fault detected"
+        )
+        encoded = encode(original)
+        decoded = decode(encoded, RoverStatus)
+
+        self.assertEqual(decoded.state, "ERROR")
+        self.assertFalse(decoded.is_moving)
+        self.assertEqual(decoded.error_msg, "Motor driver fault detected")
+
+    def test_rover_status_defaults(self):
+        """RoverStatus: missing fields should use sensible defaults."""
+        decoded = decode('{"module_id": "Rover1"}', RoverStatus)
+
+        self.assertIsNotNone(decoded)
+        self.assertEqual(decoded.state, "READY")
+        self.assertAlmostEqual(decoded.battery_level, 1.0)
+        self.assertFalse(decoded.is_moving)
+        self.assertAlmostEqual(decoded.last_cmd_age, 0.0)
+        self.assertEqual(decoded.error_msg, "")
+
+    def test_dock_command_roundtrip(self):
+        """DockCommand: encode → decode produces identical object."""
+        original = DockCommand(
+            module_id="Yubaba",
+            command="start",
+            parameters={"target": "exploration", "sector": "NE"}
+        )
+        encoded = encode(original)
+        decoded = decode(encoded, DockCommand)
+
+        self.assertIsNotNone(decoded)
+        self.assertEqual(decoded.module_id, "Yubaba")
+        self.assertEqual(decoded.command, "start")
+        self.assertEqual(decoded.parameters["target"], "exploration")
+        self.assertEqual(decoded.parameters["sector"], "NE")
+
+    def test_dock_command_simple(self):
+        """DockCommand: simple command without parameters."""
+        original = DockCommand(
+            module_id="Kiki",
+            command="stop"
+        )
+        encoded = encode(original)
+        decoded = decode(encoded, DockCommand)
+
+        self.assertEqual(decoded.module_id, "Kiki")
+        self.assertEqual(decoded.command, "stop")
+        self.assertEqual(decoded.parameters, {})
+
+    def test_dock_command_return(self):
+        """DockCommand: return command with coordinates."""
+        original = DockCommand(
+            module_id="Akko",
+            command="return",
+            parameters={"dock_x": 0.0, "dock_y": 0.0, "urgent": True}
+        )
+        encoded = encode(original)
+        decoded = decode(encoded, DockCommand)
+
+        self.assertEqual(decoded.command, "return")
+        self.assertAlmostEqual(decoded.parameters["dock_x"], 0.0)
+        self.assertAlmostEqual(decoded.parameters["dock_y"], 0.0)
+        self.assertTrue(decoded.parameters["urgent"])
 
 
 if __name__ == '__main__':

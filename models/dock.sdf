@@ -1,32 +1,49 @@
 <?xml version="1.0"?>
-<sdf version="1.11">
+<sdf version="1.9">
   <model name="dock">
-    <pose>0 0 0.05 0 0 0</pose> <!-- rests on the ground -->
+    <pose>0 0 0.25 0 0 0</pose> <!-- rests on the ground -->
     <static>true</static>
 
     <link name="base_link">
       <inertial>
-        <mass>5.0</mass>
+        <mass>10.0</mass>
         <inertia>
-          <ixx>0.2</ixx><ixy>0.0</ixy><ixz>0.0</ixz>
-          <iyy>0.2</iyy><iyz>0.0</iyz>
-          <izz>0.2</izz>
+          <ixx>0.5</ixx><ixy>0.0</ixy><ixz>0.0</ixz>
+          <iyy>0.5</iyy><iyz>0.0</iyz>
+          <izz>0.5</izz>
         </inertia>
       </inertial>
 
       <collision name="collision">
         <geometry>
-          <box><size>0.6 0.6 0.1</size></box>
+          <box><size>1.5 1.5 0.5</size></box>
         </geometry>
       </collision>
 
       <visual name="visual">
         <geometry>
-          <box><size>0.6 0.6 0.1</size></box>
+          <box><size>1.5 1.5 0.5</size></box>
         </geometry>
         <material>
           <ambient>0.8 0.1 0.1 1</ambient>
-          <diffuse>0.8 0.1 0.1 1</diffuse>
+          <diffuse>0.9 0.2 0.2 1</diffuse>
+          <specular>0.5 0.5 0.5 1</specular>
+        </material>
+      </visual>
+
+      <!-- Beacon on top for visibility -->
+      <visual name="beacon">
+        <pose>0 0 0.5 0 0 0</pose>
+        <geometry>
+          <cylinder>
+            <radius>0.2</radius>
+            <length>0.5</length>
+          </cylinder>
+        </geometry>
+        <material>
+          <ambient>1.0 0.8 0.0 1</ambient>
+          <diffuse>1.0 0.9 0.0 1</diffuse>
+          <emissive>0.5 0.4 0.0 1</emissive>
         </material>
       </visual>
     </link>

@@ -54,13 +54,25 @@ setup(
     # ------------------------
     entry_points={
         'console_scripts': [
+            # Legacy smart-rover architecture
             'dock = coven_core.dock_node:main',
             'module = coven_core.module_node:main',
             'coven_dock = coven_core.dock_node:main',
             'coven_module = coven_core.module_node:main',
+            # Dock-centric architecture
+            'simplified_module = coven_core.simplified_module_node:main',
+            'coven_simple_module = coven_core.simplified_module_node:main',
+            'simplified_dock = coven_core.simplified_dock_node:main',
+            'coven_simple_dock = coven_core.simplified_dock_node:main',
+            # Data mule architecture (offline SLAM, physical data transfer)
+            'data_mule_module = coven_core.data_mule_module:main',
+            'offline_slam_processor = coven_core.offline_slam_processor:main',
+            'frontier_dispatcher = coven_core.frontier_dispatcher:main',
+            # Utilities
             'spawn_module = coven_core.spawn_module:main',
             'odom_tf_broadcaster = coven_core.odom_tf_broadcaster:main',
             'scan_frame_republisher = coven_core.scan_frame_republisher:main',
+            'topic_relay = coven_core.topic_relay:main',
         ],
     },
 )

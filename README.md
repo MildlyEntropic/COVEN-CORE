@@ -1,211 +1,196 @@
 # COVEN
 
-**Composable Operations for Versatile Exploration Networks**
+**Collaborative Observation Vehicles for Exploration Networks**
 
-A finite state machine protocol for coordinating autonomous exploration modules with docking infrastructure. Designed for multi-robot planetary exploration missions.
+A ROS2 multi-robot exploration system using the **data mule** pattern for efficient SLAM in resource-constrained environments.
 
 ---
 
 ## What It Does
 
-- **Dock-Module Architecture** - Central dock coordinates multiple exploration modules
-- **Automatic Discovery** - Modules self-register via identification handshake
-- **Health Verification** - Sensor checks before mission assignment (LiDAR, odometry)
-- **Competitive Task Bidding** - Modules bid on missions based on capability/proximity
-- **Fault Tolerance** - Graceful degradation when modules fail
-- **Frontier Exploration** - Autonomous SLAM-based mapping with Nav2
+COVEN deploys multiple lightweight rovers ("witches") from a central dock ("coven") to explore unknown environments. Unlike traditional multi-robot SLAM where each robot builds its own map, COVEN rovers are simple data collectors—they record sensor data during exploration and return it to the dock for centralized processing.
+
+```
+                    ┌─────────────────┐
+                    │     DOCK        │
+                    │  (The Coven)    │
+                    │                 │
+                    │  ┌───────────┐  │
+                    │  │  Offline  │  │
+                    │  │   SLAM    │  │
+                    │  └───────────┘  │
+                    │  ┌───────────┐  │
+                    │  │ Frontier  │  │
+                    │  │ Dispatch  │  │
+                    │  └───────────┘  │
+                    └────────┬────────┘
+                             │
+            ┌────────────────┼────────────────┐
+            │                │                │
+            ▼                ▼                ▼
+       ┌─────────┐      ┌─────────┐      ┌─────────┐
+       │ Witch 1 │      │ Witch 2 │      │ Witch N │
+       │ (Rover) │      │ (Rover) │      │ (Rover) │
+       └─────────┘      └─────────┘      └─────────┘
+```
 
 Built for lunar exploration research, warehouse automation, and multi-robot coordination studies.
 
 ---
 
-## Quick Start
+## Why Data Mules?
 
-### Using the `coven` CLI (Recommended)
+Traditional multi-robot SLAM requires:
+- Powerful onboard computers for each robot
+- Complex inter-robot communication for map merging
+- Significant bandwidth for sharing map data
 
-```bash
-cd ~/ros2_ws
+The data mule approach instead:
+- Uses simple, cheap rovers with minimal compute
+- Records raw sensor data during exploration
+- Returns to dock for centralized processing
+- Enables offline SLAM with full computational resources
 
-# Run tests
-./coven test
-
-# Launch full simulation (Gazebo + Nav2 + COVEN)
-./coven sim          # Single robot
-./coven sim 3        # Three robots
-
-# Manual node control
-./coven dock         # Start dock node
-./coven module       # Start module node
-
-# See all commands
-./coven help
-```
-
-### Manual Build
-
-```bash
-cd ~/ros2_ws
-source /opt/ros/humble/setup.bash
-colcon build --packages-select coven_core --symlink-install
-source install/setup.bash
-```
+This makes COVEN ideal for:
+- Swarm robotics with many low-cost units
+- Communication-denied environments (caves, lunar pits)
+- Scenarios where map quality matters more than real-time updates
 
 ---
 
-## Simulation
+## Quick Start
 
-Launch the COVEN native simulation with Gazebo:
+### Simulation
 
 ```bash
-# Full simulation with GUI
-ros2 launch coven_core coven_sim.launch.py
+cd ~/ros2_ws
+source /opt/ros/jazzy/setup.bash
+colcon build --packages-select coven_core
+source install/setup.bash
 
-# Headless (no GUI, for CI/testing)
-ros2 launch coven_core coven_sim.launch.py headless:=true
+# Launch with 2 rovers (default)
+ros2 launch coven_core coven_data_mule_sim.launch.py
+
+# Launch with 4 rovers
+ros2 launch coven_core coven_data_mule_sim.launch.py witch_count:=4
 ```
 
-This starts:
-- Gazebo simulation (coven_test world)
-- COVEN rover (witch_1) with LIDAR and diff-drive
-- ros_gz_bridge (clock, TF, odom, LIDAR, cmd_vel)
-- COVEN dock + module nodes
-
-Each robot operates in its own namespace (e.g., `/witch_1/`) while COVEN protocol topics remain global (`/coven/*`).
+This opens separate terminal windows for:
+- **Gazebo**: Simulation environment
+- **Witch terminals**: One per rover showing navigation status
+- **Coven terminal**: Dispatcher and SLAM processor status
 
 ---
 
 ## Architecture
 
+### Core Nodes
+
+| Node | Location | Purpose |
+|------|----------|---------|
+| `data_mule_module` | Rover | Navigate, record sensors, return data |
+| `frontier_dispatcher` | Dock | Analyze map, assign exploration targets |
+| `offline_slam_processor` | Dock | Replay recorded data through SLAM |
+
+### Rover State Machine
+
 ```
-                    ┌─────────────────┐
-                    │   COVEN DOCK    │
-                    │  (Coordinator)  │
-                    └────────┬────────┘
-                             │
-              Global /coven/* topics
-                             │
-         ┌───────────────────┼───────────────────┐
-         │                   │                   │
-    ┌────▼─────┐       ┌────▼─────┐       ┌────▼─────┐
-    │ Module 1 │       │ Module 2 │       │ Module N │
-    │ robot_1  │       │ robot_2  │       │ robot_N  │
-    └────┬─────┘       └────┬─────┘       └────┬─────┘
-         │                   │                   │
-    /robot_1/*          /robot_2/*          /robot_N/*
-    (sensors, nav)      (sensors, nav)      (sensors, nav)
+IDLE → RECORDING → RETURNING → TRANSFERRING → COMPLETE → IDLE
+  │                                                        │
+  └────────────────────────────────────────────────────────┘
 ```
 
-### Protocol State Machine
+### Data Flow
 
-**Module States:**
-```
-BOOT → IDENTIFY → WAIT_VERIFY → NORMAL ⟷ FIELD_OPS
-                       ↓
-                   REJECTED (on health check failure)
-```
-
-**Message Flow:**
-```
-Dock                          Module
-  │                              │
-  │──── IDENTIFY_REQ (broadcast) │
-  │                              │
-  │◄─── IDENTIFY_REP ────────────│  "I'm Hermione_Granger, ReconRover"
-  │                              │
-  │──── VERIFY_REQ ──────────────│
-  │                              │
-  │◄─── VERIFY_REP ──────────────│  "LiDAR: OK, Odom: OK"
-  │                              │
-  │──── ENABLE_12V ──────────────│
-  │                              │
-  │◄─── HEARTBEAT (1.25 Hz) ─────│
-  │                              │
-  │──── BID_NOTICE ──────────────│  "Explore sector A"
-  │                              │
-  │◄─── BID_PROPOSAL ────────────│  "I can reach it in 45s"
-  │                              │
-  │──── TASK_REQ ────────────────│  "You win, go explore"
-  │                              │
-  │◄─── TASK_ACK ────────────────│
-  │◄─── TASK_START ──────────────│
-  │         ...exploration...    │
-  │◄─── TASK_COMPLETE ───────────│  "Done, 73% coverage"
-```
+1. **Dispatch**: Dock sends waypoint to idle rover
+2. **Explore**: Rover navigates toward target, recording LiDAR + odometry at 10Hz
+3. **Return**: Rover heads back to dock when target reached
+4. **Transfer**: Rover saves JSON data file, notifies dock
+5. **Process**: Offline SLAM replays data at 10x speed, updates map
+6. **Repeat**: Frontier analysis finds new targets, cycle continues
 
 ### Topics
 
-**Discovery & Verification:**
-| Topic | Direction | Purpose |
-|-------|-----------|---------|
-| `/coven/identify_req` | Dock → All | Request module identification |
-| `/coven/identify_rep` | Module → Dock | Report ID, type, capabilities |
-| `/coven/verify_req` | Dock → Module | Request health check |
-| `/coven/verify_rep` | Module → Dock | Report sensor status |
-| `/coven/enable_12v` | Dock → Module | Enable power (after verification) |
+**Published by Rovers:**
+| Topic | Purpose |
+|-------|---------|
+| `/coven/module_status` | Rover heartbeats and state |
+| `/coven/mule_data` | Data transfer notifications |
 
-**Operations:**
-| Topic | Direction | Purpose |
-|-------|-----------|---------|
-| `/coven/heartbeat` | Module → Dock | Periodic status (0.8s interval) |
-| `/coven/bid_notice` | Dock → All | Announce available task |
-| `/coven/bid_proposal` | Module → Dock | Submit bid for task |
-| `/coven/task_req` | Dock → Module | Assign task to winner |
-| `/coven/task_ack` | Module → Dock | Acknowledge assignment |
-| `/coven/task_start` | Module → Dock | Report task started |
-| `/coven/task_complete` | Module → Dock | Report task finished |
-
-All messages are JSON-encoded `std_msgs/String`.
+**Published by Dock:**
+| Topic | Purpose |
+|-------|---------|
+| `/coven/missions` | Mission assignments |
+| `/coven/dispatcher_status` | Exploration progress |
+| `/coven/slam_processor_status` | SLAM processing state |
 
 ---
 
-## Module Naming
+## Data Output
 
-Modules are automatically assigned names from curated lists:
+Session data is saved to:
+```
+~/Desktop/COVEN/Data/YYYYMMDD.HHMM.SS/
+└── Coven_Name/
+    ├── Witch_Name/
+    │   └── Scan[SS:SS].json    # Recorded sensor frames
+    └── SLAM/
+        ├── map_mission_001.pgm  # Incremental maps
+        ├── map_mission_001.yaml
+        └── map.pgm              # Final map on shutdown
+```
 
-**Modules (Witches):** Hermione_Granger, Elphaba, Circe, Baba_Yaga, Wanda_Maximoff, Kiki, Yubaba, Mother_Talzin, etc. (30 names)
-
-**Docks (Covens):** The_Sanderson_Sisters, The_Weird_Sisters, The_Bene_Gesserit, The_Hex_Girls, etc. (10 names)
-
-Names are randomly assigned without duplicates until the pool is exhausted.
+Each `Scan[SS:SS].json` contains:
+- Mission metadata (ID, module, timestamps)
+- Initial position (x, y, theta) for world-frame alignment
+- Array of sensor frames (LiDAR ranges, odometry)
 
 ---
 
-## Testing
+## Configuration
 
-### Quick Tests
-```bash
-./coven test-quick     # Unit tests only (~3s)
-./coven test           # Full rigorous suite
-./coven test-all       # Everything including stress tests
-```
+### Rover Parameters
 
-### Test Coverage
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `module_id` | Required | Unique rover identifier |
+| `record_rate_hz` | 10.0 | Sensor recording frequency |
+| `linear_speed` | 0.4 | Forward velocity (m/s) |
+| `angular_speed` | 0.6 | Rotation velocity (rad/s) |
+| `obstacle_threshold` | 0.4 | Minimum obstacle distance (m) |
+| `spawn_x/y/yaw` | 0.0 | Spawn position for teleport-back (sim only) |
 
-| Suite | Tests | Coverage |
-|-------|-------|----------|
-| `test_common.py` | 23 | Message encoding, naming system |
-| `test_fsm_transitions.py` | 17 | State machine logic |
-| `test_protocol_validation.py` | 10 | Full protocol flows |
-| `test_rigorous_integration.py` | 9 | Performance benchmarks |
+### Dispatcher Parameters
 
-**59 tests total**, all passing.
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `coverage_goal` | 0.75 | Target map coverage (0-1) |
+| `exploration_radius` | 4.0 | Max distance from dock (m) |
+| `min_frontier_size` | 3 | Minimum frontier cell count |
+| `auto_dispatch` | true | Automatically send idle rovers |
+
+### SLAM Processor Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `playback_speed` | 10.0 | Replay speed multiplier |
+| `scan_topic` | /offline_scan | Topic for replayed scans |
+| `slam_output_dir` | "" | Directory for map output |
 
 ---
 
-## Dependencies
+## Naming Convention
 
-### Core (Required)
-```bash
-sudo apt install ros-humble-desktop python3-pytest
-```
+COVEN uses a witch/coven theme:
 
-### Simulation (For `coven sim`)
+| Term | Meaning |
+|------|---------|
+| **Coven** | Central dock/base station (e.g., The_Graeae, The_Weird_Sisters) |
+| **Witch** | Individual rover (e.g., Morrigan, Louhi, Baba_Yaga, Hecate) |
+| **Mission** | Single exploration sortie |
+| **Frontier** | Unexplored map boundary |
 
-```bash
-sudo apt install \
-  ros-jazzy-ros-gz \
-  ros-jazzy-robot-state-publisher
-```
+Names are drawn from mythology and pop culture.
 
 ---
 
@@ -214,153 +199,110 @@ sudo apt install \
 ```
 coven_core/
 ├── coven_core/
-│   ├── dock_node.py       # Dock FSM, module coordination, task bidding
-│   ├── module_node.py     # Module FSM, health checks, task execution
-│   ├── exploration.py     # Frontier-based autonomous navigation
-│   └── common.py          # Protocol messages, naming system
+│   ├── data_mule_module.py      # Rover: navigate, record, return
+│   ├── frontier_dispatcher.py   # Dock: analyze map, dispatch rovers
+│   ├── offline_slam_processor.py # Dock: replay data through SLAM
+│   └── common.py                # Shared utilities, naming
+├── config/
+│   └── slam_params_sim.yaml     # SLAM Toolbox configuration
 ├── launch/
-│   └── coven_multi_sim.launch.py  # Multi-robot Gazebo simulation
-├── test/
-│   ├── test_common.py
-│   ├── test_fsm_transitions.py
-│   ├── test_protocol_validation.py
-│   └── test_rigorous_integration.py
+│   └── coven_data_mule_sim.launch.py  # Main simulation launch
+├── models/
+│   ├── coven_rover/             # Rover SDF with LiDAR
+│   └── dock.sdf                 # Dock model
+├── worlds/
+│   └── coven_4rover.sdf         # Simulation world
 └── README.md
 ```
 
 ---
 
-## Configuration
+## Dependencies
 
-### Module Parameters
+```bash
+# Core
+sudo apt install ros-jazzy-slam-toolbox ros-jazzy-nav2-map-server
 
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `robot_namespace` | `""` | Robot namespace for sensors (e.g., `robot_1`) |
-| `skip_health_check` | `false` | Skip LiDAR/odom verification |
-| `use_sim_time` | `false` | Use simulation clock |
-
-### Timing Constants
-
-```python
-HB_PERIOD = 0.8           # Heartbeat interval (seconds)
-HB_MISS_THRESHOLD = 3     # Missed heartbeats before timeout
-IDENTIFY_INTERVAL = 5.0   # Discovery broadcast interval
-EXPLORATION_TIMEOUT = 300 # Max exploration time (seconds)
-COVERAGE_THRESHOLD = 0.8  # Target map coverage (80%)
+# Simulation
+sudo apt install ros-jazzy-ros-gz ros-jazzy-robot-state-publisher
 ```
 
 ---
 
 ## Status
 
-### Complete
-- Multi-module coordination (tested with 5+ concurrent modules)
-- Discovery and registration protocol
-- Health verification (LiDAR, odometry)
-- Competitive task bidding
-- Heartbeat monitoring with timeout detection
-- State machine transitions
-- Frontier-based exploration with Nav2
-- Multi-robot TF namespace isolation
-- Graceful degradation on module failure
+### Working
+- Multi-rover dispatch in different directions (N, S, E, W, etc.)
+- Sensor data recording during exploration (LiDAR + odometry)
+- Obstacle avoidance and waypoint navigation
+- Return-to-dock behavior
+- Teleport back to spawn position (simulation)
+- Mission queuing for overlapping returns
+- State transition tracking (no race conditions)
+- Session-based data organization
+- Offline SLAM replay with world-frame transform
 
-### In Development
-- Hardware fabrication (CubeRover-scale modules)
-- Physical docking mechanism
-- Map merging from multiple explorers
+### Known Issues
+- SLAM map saving may fail if `/map` topic isn't ready
+- Coverage calculation requires proper TF chain
 
----
-
-## Roadmap
-
-The core premise: **land the dock once, send modules incrementally**. The dock is permanent infrastructure - the reusable brain that outlives individual modules. Modules are cheaper, expendable, and can be sent over multiple missions as capabilities expand.
-
-### COVEN 1.x (Current)
-
-- ReconRover proof-of-concept with LIDAR
-- Single-dock coordination
-- Competitive bidding with battery/position factors
-- Frontier-based exploration
-
-### COVEN 2.x
-
-- **Specialized Module Types** (same dock, new module types over time)
-  - SpectrometerRover - Spectral analysis missions
-  - DrillRover - Sample collection
-  - CargoRover - Material transport
-  - RelayRover - Communications extension
-- Task-type matching (modules bid based on capability fit)
-- Battery-aware scheduling (low battery = higher bid cost)
-
-### COVEN 3.x
-
-- **Multi-Dock Networks** (second dock landing expands coverage)
-  - Dock-to-dock task handoff
-  - Regional coverage zones
-  - Distributed map sharing
-
-### COVEN 4.x
-
-- **Mini-Swarms** (send a squad, not just one rover)
-  - Swarm leaders coordinate sub-teams (5-rover squads)
-  - Formation-based exploration patterns
-  - Sector sweep with overwatch/backup roles
-  - Fault-tolerant sub-task redistribution
-
-### COVEN 5.x
-
-- **Heterogeneous Swarm Coordination**
-  - Mixed swarms (recon + spectrometer + drill working together)
-  - Dynamic swarm composition based on mission needs
-  - Inter-swarm coordination for large-scale operations
-
----
-
-## Why COVEN?
-
-### The Problem
-
-Planetary robotics operates like hand-building Model Ts. Mars 2020 cost $2.7 billion for one rover. When Perseverance dies, that investment becomes space debris. Every mission requires:
-
-- **Bespoke hardware** - custom-designed from scratch
-- **Decade-long development** - 10+ years from proposal to launch
-- **Single points of failure** - one rover, one chance
-- **Wasted careers** - scientists spend lifetimes on logistics instead of discovery
-
-A planetary scientist might dedicate their entire 40-year career to one mission: a decade writing proposals, another waiting for launch, five years of data collection, then retirement. One career. One rover. One dataset.
-
-### The Solution
-
-COVEN treats the dock as **permanent infrastructure** - the reusable brain that outlives individual modules. Instead of building a new spacecraft for each mission, you:
-
-1. **Land the dock once** - permanent coordination infrastructure
-2. **Send modules incrementally** - cheaper, expendable, specialized
-3. **Accumulate capability over time** - each mission adds tools to the fleet
-
-The same dock that coordinates a single ReconRover in 2026 can coordinate a fleet of spectrometers, drills, and cargo haulers in 2036 - without redesign.
-
-### The Insight
-
-We're not inventing new technology. Autonomous navigation works (Nav2). Docking is nearly solved (RoSE, opennav_docking). Multi-robot coordination works (CADRE). 3D printing in space is funded research (NASA ISRU). The components exist.
-
-What's missing is the **integration architecture** - the assembly line that connects existing components into something scalable. COVEN is that architecture.
-
-**The goal:** Transform planetary robotics from artisanal craftsmanship into infrastructure-as-a-service. A scientist submits a task request. A week later, they have data. They iterate. They actually do science.
+### Planned
+- Physical hardware support
+- Improved frontier selection (distance-based scoring)
+- Multi-dock coordination
+- Real wireless data transfer
 
 ---
 
 ## Research Context
 
-COVEN addresses the "coordination gap" in planetary robotics - the absence of a standardized protocol enabling heterogeneous robots to work together without mission-specific pre-configuration.
+COVEN addresses the "coordination gap" in planetary robotics—the absence of a standardized protocol enabling heterogeneous robots to work together without mission-specific pre-configuration.
 
-**Key References:**
-- HOTDOCK (DFKI, 2018) - Electromechanical docking
+### The Core Insight
+
+The dock is **permanent infrastructure**—the reusable brain that outlives individual modules. Instead of building a new spacecraft for each mission:
+
+1. **Land the dock once** - permanent coordination infrastructure
+2. **Send modules incrementally** - cheaper, expendable, specialized
+3. **Accumulate capability over time** - each mission adds tools to the fleet
+
+The same dock that coordinates a single ReconRover in 2026 can coordinate a fleet of spectrometers, drills, and cargo haulers in 2036—without redesign.
+
+### Key References
 - CADRE (NASA JPL, 2024) - Swarm coordination
-- RIMRES (Cordes et al., 2010) - Reconfigurable multi-robot systems
+- HOTDOCK (DFKI, 2018) - Electromechanical docking
 - Nav2 (Macenski et al., 2020) - Autonomous navigation
 - Frontier Exploration (Yamauchi, 1997) - Autonomous mapping
 - RoSE (Zhu et al., Colorado School of Mines) - Autonomous redocking
+
+---
+
+## Roadmap
+
+### COVEN 1.x (Current)
+- Data mule proof-of-concept with LiDAR
+- Single-dock coordination
+- Frontier-based exploration
+- Offline SLAM processing
+
+### COVEN 2.x
+- **Specialized Module Types**
+  - SpectrometerRover - Spectral analysis
+  - DrillRover - Sample collection
+  - CargoRover - Material transport
+- Task-type matching based on capability
+
+### COVEN 3.x
+- **Multi-Dock Networks**
+  - Dock-to-dock task handoff
+  - Regional coverage zones
+  - Distributed map sharing
+
+### COVEN 4.x
+- **Mini-Swarms**
+  - Swarm leaders coordinate sub-teams
+  - Formation-based exploration
+  - Fault-tolerant redistribution
 
 ---
 
@@ -382,4 +324,4 @@ Thesis Advisor: Dr. Jiaoyang Zhu (Colorado School of Mines)
 
 ---
 
-**ROS2 Humble | Python 3.10+ | Gazebo Ignition**
+**ROS2 Jazzy | Python 3.12+ | Gazebo Harmonic**

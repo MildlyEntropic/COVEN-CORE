@@ -53,7 +53,7 @@ class DockState(Enum):
 
 
 class ModuleState(Enum):
-    """FSM states for a COVEN module."""
+    """FSM states for a COVEN module (legacy - used in smart-rover architecture)."""
 
     BOOT = 0
     IDENTIFY = 1
@@ -62,6 +62,19 @@ class ModuleState(Enum):
     REJECTED = 4
     DISCONNECTED = 5
     FIELD_OPS = 6
+
+
+class SimplifiedModuleState(Enum):
+    """Simplified FSM states for dock-centric architecture.
+
+    In dock-centric mode, rovers are simple sensor/actuator nodes.
+    Heavy computation (SLAM, Nav2, exploration) runs on the dock.
+    """
+
+    BOOT = 0      # Starting up, not yet registered
+    READY = 1     # Registered with dock, awaiting commands
+    ACTIVE = 2    # Executing velocity commands
+    ERROR = 3     # Error state, needs intervention
 
 
 # ------------------------
@@ -482,6 +495,128 @@ class CoverageMissionComplete:
 
 
 # ------------------------
+# --- Dock-Centric Messages ---
+# ------------------------
+# These messages support the dock-centric architecture where:
+# - Rovers are simple sensor/actuator nodes (Pi Zero 2W)
+# - Dock runs all heavy computation: SLAM, Nav2, exploration planning
+# - Communication is sensor data up, velocity commands down
+
+@dataclass
+class RoverRegistration:
+    """Rover announces itself to the dock on boot.
+
+    Sent once when rover transitions from BOOT to READY state.
+    Dock uses this to track available rovers and their capabilities.
+    """
+
+    module_id: str                       # Unique rover identifier
+    module_type: str = "lidar_rover"     # Rover type (lidar_rover, camera_rover, etc.)
+    firmware_version: str = "1.0.0"      # Firmware/software version
+    capabilities: Optional[List[str]] = None  # ["lidar", "odom", "camera", etc.]
+    initial_battery: float = 1.0         # Battery level at registration
+
+    def __post_init__(self):
+        if self.capabilities is None:
+            self.capabilities = ["lidar", "odom"]
+
+
+@dataclass
+class RoverRegistrationAck:
+    """Dock acknowledges rover registration.
+
+    Sent in response to RoverRegistration. Provides rover with
+    its assigned namespace and any dock-side configuration.
+    """
+
+    module_id: str                       # Echoed back for confirmation
+    accepted: bool = True                # False if dock rejects rover
+    assigned_namespace: str = ""         # Namespace to use (usually module_id)
+    reason: str = ""                     # Rejection reason if not accepted
+
+
+@dataclass
+class SensorData:
+    """Bundled sensor data from rover to dock.
+
+    Rovers publish this at regular intervals. Contains all sensor
+    readings the dock needs for SLAM and navigation. Using a single
+    bundled message reduces topic overhead vs separate topics.
+    """
+
+    module_id: str
+    timestamp: float = 0.0               # ROS time when captured
+
+    # LiDAR scan (compressed)
+    scan_ranges: Optional[List[float]] = None   # Range readings
+    scan_angle_min: float = 0.0
+    scan_angle_max: float = 6.28         # 2*pi for 360 degree
+    scan_angle_increment: float = 0.0175  # ~1 degree
+
+    # Odometry
+    odom_x: float = 0.0
+    odom_y: float = 0.0
+    odom_theta: float = 0.0              # Heading in radians
+    odom_vx: float = 0.0                 # Linear velocity
+    odom_vtheta: float = 0.0             # Angular velocity
+
+    # Battery
+    battery_level: float = 1.0           # 0.0 - 1.0
+
+    def __post_init__(self):
+        if self.scan_ranges is None:
+            self.scan_ranges = []
+
+
+@dataclass
+class VelocityCommand:
+    """Velocity command from dock to rover.
+
+    Dock computes navigation and sends velocity commands.
+    Rover simply executes these without local planning.
+    """
+
+    module_id: str                       # Target rover
+    linear_x: float = 0.0                # Forward velocity (m/s)
+    angular_z: float = 0.0               # Rotation velocity (rad/s)
+    timestamp: float = 0.0               # When command was generated
+    timeout: float = 0.5                 # Stop if no new command within timeout
+
+
+@dataclass
+class RoverStatus:
+    """Simplified status message from rover to dock.
+
+    Lightweight periodic update. More detailed than heartbeat,
+    less verbose than full SensorData.
+    """
+
+    module_id: str
+    state: str = "READY"                 # SimplifiedModuleState as string
+    battery_level: float = 1.0
+    is_moving: bool = False              # Currently executing velocity
+    last_cmd_age: float = 0.0            # Seconds since last velocity command
+    error_msg: str = ""                  # Error details if state is ERROR
+
+
+@dataclass
+class DockCommand:
+    """High-level command from dock to rover.
+
+    Used for state transitions and mission control,
+    not for continuous velocity commands.
+    """
+
+    module_id: str
+    command: str                         # "start", "stop", "return", "shutdown"
+    parameters: Optional[Dict] = None    # Command-specific parameters
+
+    def __post_init__(self):
+        if self.parameters is None:
+            self.parameters = {}
+
+
+# ------------------------
 # --- Encode / Decode ---
 # ------------------------
 # These wrapper functions use the generic serializer from coven_core.serialization
@@ -648,3 +783,73 @@ def coverage_mission_complete_encode(cmc: CoverageMissionComplete) -> str:
 def coverage_mission_complete_decode(msg: String) -> Optional[CoverageMissionComplete]:
     """Decode CoverageMissionComplete from ROS String message."""
     return _generic_decode(msg, CoverageMissionComplete)
+
+
+# ------------------------
+# --- Dock-Centric Encode/Decode ---
+# ------------------------
+
+# ROVER_REGISTRATION
+def rover_registration_encode(reg: RoverRegistration) -> str:
+    """Encode RoverRegistration to JSON string."""
+    return _generic_encode(reg)
+
+
+def rover_registration_decode(msg: String) -> Optional[RoverRegistration]:
+    """Decode RoverRegistration from ROS String message."""
+    return _generic_decode(msg, RoverRegistration)
+
+
+# ROVER_REGISTRATION_ACK
+def rover_registration_ack_encode(ack: RoverRegistrationAck) -> str:
+    """Encode RoverRegistrationAck to JSON string."""
+    return _generic_encode(ack)
+
+
+def rover_registration_ack_decode(msg: String) -> Optional[RoverRegistrationAck]:
+    """Decode RoverRegistrationAck from ROS String message."""
+    return _generic_decode(msg, RoverRegistrationAck)
+
+
+# SENSOR_DATA
+def sensor_data_encode(sd: SensorData) -> str:
+    """Encode SensorData to JSON string."""
+    return _generic_encode(sd)
+
+
+def sensor_data_decode(msg: String) -> Optional[SensorData]:
+    """Decode SensorData from ROS String message."""
+    return _generic_decode(msg, SensorData)
+
+
+# VELOCITY_COMMAND
+def velocity_command_encode(vc: VelocityCommand) -> str:
+    """Encode VelocityCommand to JSON string."""
+    return _generic_encode(vc)
+
+
+def velocity_command_decode(msg: String) -> Optional[VelocityCommand]:
+    """Decode VelocityCommand from ROS String message."""
+    return _generic_decode(msg, VelocityCommand)
+
+
+# ROVER_STATUS
+def rover_status_encode(rs: RoverStatus) -> str:
+    """Encode RoverStatus to JSON string."""
+    return _generic_encode(rs)
+
+
+def rover_status_decode(msg: String) -> Optional[RoverStatus]:
+    """Decode RoverStatus from ROS String message."""
+    return _generic_decode(msg, RoverStatus)
+
+
+# DOCK_COMMAND
+def dock_command_encode(dc: DockCommand) -> str:
+    """Encode DockCommand to JSON string."""
+    return _generic_encode(dc)
+
+
+def dock_command_decode(msg: String) -> Optional[DockCommand]:
+    """Decode DockCommand from ROS String message."""
+    return _generic_decode(msg, DockCommand)

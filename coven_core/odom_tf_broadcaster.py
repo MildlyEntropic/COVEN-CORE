@@ -24,7 +24,7 @@ class OdomTFBroadcaster(Node):
         super().__init__('odom_tf_broadcaster')
 
         # Declare parameters
-        self.declare_parameter('odom_topic', '/odom')
+        self.declare_parameter('odom_topic', 'odom')  # Use relative topic for remapping
         self.declare_parameter('odom_frame', 'odom')
         self.declare_parameter('base_frame', 'base_link')
 
