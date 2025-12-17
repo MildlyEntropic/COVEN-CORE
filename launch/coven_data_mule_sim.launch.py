@@ -429,12 +429,12 @@ def launch_setup(context, *args, **kwargs):
         ))
 
     actions.append(TimerAction(
-        period=5.0,
+        period=7.0,
         actions=spawn_actions
     ))
 
     # ============================================================
-    # STAGE 4: Sensor bridges (8s after Gazebo - after models spawned)
+    # STAGE 4: Sensor bridges (10s after Gazebo - after models spawned)
     # ============================================================
     bridge_actions = [LogInfo(msg='[COVEN] Starting sensor bridges...')]
 
@@ -472,15 +472,15 @@ def launch_setup(context, *args, **kwargs):
         ))
 
     actions.append(TimerAction(
-        period=8.0,
+        period=10.0,
         actions=bridge_actions
     ))
 
     # ============================================================
-    # STAGE 5: SLAM Toolbox (10s after Gazebo)
+    # STAGE 5: SLAM Toolbox (12s after Gazebo)
     # ============================================================
     actions.append(TimerAction(
-        period=10.0,
+        period=12.0,
         actions=[
             LogInfo(msg='[COVEN] Starting SLAM Toolbox...'),
             ExecuteProcess(
@@ -497,10 +497,10 @@ def launch_setup(context, *args, **kwargs):
     ))
 
     # ============================================================
-    # STAGE 6: Witch terminals (15s+ after Gazebo - bridges should be up)
+    # STAGE 6: Witch terminals (17s+ after Gazebo - bridges should be up)
     # ============================================================
     for i, ws in enumerate(witch_scripts):
-        delay = 15.0 + (i * 2.0)
+        delay = 17.0 + (i * 2.0)
         witch_title = ws['name'].replace('_', ' ')
         actions.append(TimerAction(
             period=delay,
@@ -517,7 +517,7 @@ def launch_setup(context, *args, **kwargs):
     # ============================================================
     # STAGE 7: Dock terminal (after witches)
     # ============================================================
-    dock_delay = 17.0 + (witch_count * 2.0)
+    dock_delay = 19.0 + (witch_count * 2.0)
     dock_title = dock_name.replace('_', ' ')
     actions.append(TimerAction(
         period=dock_delay,
