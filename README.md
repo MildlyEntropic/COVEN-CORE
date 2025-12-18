@@ -378,7 +378,7 @@ Department of Astronomy
 December 2025
 
 Faculty Advisor: Dr. Miguel Nunes (HSFL)
-Thesis Advisor: Dr. Jiaoyang Zhu (Colorado School of Mines)
+Thesis Advisor: Dr. Frances 'Frankie' Zhu (Colorado School of Mines)
 
 ---
 
