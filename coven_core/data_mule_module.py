@@ -564,7 +564,25 @@ class DataMuleModule(Node):
         self.get_logger().info('[DataMule] Ready for next mission')
 
     def _teleport_to_spawn(self):
-        """Teleport rover back to its spawn position using Gazebo service."""
+        """
+        Reset rover position after docking.
+
+        In simulation: Teleports via Gazebo service.
+        On hardware: Logs ready status (human operator handles physical docking).
+        """
+        # Check if we're in simulation mode
+        use_sim_time = self.get_parameter('use_sim_time').value
+
+        if not use_sim_time:
+            # Hardware mode - human operator handles docking
+            self.get_logger().info(
+                f'[DataMule] At dock position ({self.current_pose[0]:.2f}, '
+                f'{self.current_pose[1]:.2f}) - ready for manual docking'
+            )
+            self.get_logger().info('[DataMule] Plug in rover to transfer data and recharge')
+            return
+
+        # Simulation mode - teleport via Gazebo
         import subprocess
 
         # Convert yaw to quaternion

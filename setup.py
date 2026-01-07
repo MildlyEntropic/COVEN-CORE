@@ -66,8 +66,12 @@ setup(
             'coven_simple_dock = coven_core.simplified_dock_node:main',
             # Data mule architecture (offline SLAM, physical data transfer)
             'data_mule_module = coven_core.data_mule_module:main',
+            'data_mule = coven_core.data_mule_module:main',  # Alias
             'offline_slam_processor = coven_core.offline_slam_processor:main',
             'frontier_dispatcher = coven_core.frontier_dispatcher:main',
+            # Hardware drivers (for physical CubeRover deployment)
+            'motor_driver = coven_core.motor_driver:main',
+            'encoder_odom = coven_core.encoder_odom:main',
             # Utilities
             'spawn_module = coven_core.spawn_module:main',
             'odom_tf_broadcaster = coven_core.odom_tf_broadcaster:main',
