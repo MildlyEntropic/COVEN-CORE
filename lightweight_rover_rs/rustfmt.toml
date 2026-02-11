@@ -1,0 +1,25 @@
+# COVEN Rover Daemon - Rust Style Configuration
+#
+# Aligns with the official Rust Style Guide:
+# https://doc.rust-lang.org/style-guide/
+#
+# Run: cargo fmt
+# Check: cargo fmt --check
+
+# Core formatting (matches Rust style guide)
+edition = "2021"
+max_width = 100
+tab_spaces = 4
+hard_tabs = false
+
+# Import organization (stable options only)
+reorder_imports = true
+reorder_modules = true
+
+# Consistent style (stable options only)
+use_small_heuristics = "Default"
+use_field_init_shorthand = true
+use_try_shorthand = true
+
+# Line endings
+newline_style = "Unix"

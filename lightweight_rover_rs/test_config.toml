@@ -1,0 +1,42 @@
+# Test configuration for mock rover
+# Points to localhost for testing with rover_bridge
+
+rover_id = "Test_Rover"
+coven_name = "Test_Coven"
+
+# Connect to local bridge
+dock_address = "127.0.0.1"
+dock_port = 5555
+
+[hardware.motors]
+left_pwm = 12
+left_in1 = 5
+left_in2 = 6
+right_pwm = 13
+right_in1 = 16
+right_in2 = 26
+standby = 17
+pwm_frequency = 1000.0
+wheel_base = 0.298
+wheel_radius = 0.08
+max_rpm = 100.0
+
+[hardware.encoders]
+left_a = 23
+left_b = 24
+right_a = 27
+right_b = 22
+pulses_per_rev = 210
+
+[hardware.lidar]
+port = "/dev/ydlidar"
+baud_rate = 128000
+scan_rate = 6.0
+range_min = 0.12
+range_max = 10.0
+
+[timing]
+control_rate = 20.0
+heartbeat_rate = 1.0
+odom_rate = 50.0
+cmd_timeout = 0.5

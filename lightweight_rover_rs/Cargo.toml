@@ -1,0 +1,48 @@
+[package]
+name = "coven-rover"
+version = "0.1.0"
+edition = "2021"
+authors = ["Alexander Shultis <shultis@hawaii.edu>"]
+description = "Lightweight COVEN rover daemon - no ROS2"
+license = "MIT"
+
+[dependencies]
+# GPIO and hardware
+rppal = "0.19"              # Raspberry Pi GPIO, PWM, I2C, SPI
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Serial port (for YDLiDAR)
+tokio-serial = "5.4"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Error handling
+anyhow = "1"
+thiserror = "1"
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Config
+toml = "0.8"
+shellexpand = "3"
+
+[profile.release]
+opt-level = "z"     # Optimize for size
+lto = true          # Link-time optimization
+codegen-units = 1   # Single codegen unit for better optimization
+strip = true        # Strip symbols
+
+[profile.dev]
+opt-level = 1       # Some optimization even in dev (for timing)
+
+# Cross-compilation targets
+# Build with: cargo build --release --target arm-unknown-linux-gnueabihf
