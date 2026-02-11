@@ -1,0 +1,51 @@
+# YDLiDAR X4 Parameters for COVEN Rover
+#
+# The YDLiDAR X4 is a 2D LiDAR with 10m range, 7Hz scan rate.
+# Connect via USB-UART adapter.
+#
+# Author: Alexander Shultis
+# Date: January 2026
+
+ydlidar_ros2_driver_node:
+  ros__parameters:
+    # Serial port (use udev symlink for reliability)
+    port: /dev/ydlidar
+    frame_id: laser
+
+    # Ignore specific angle ranges (empty = use all)
+    ignore_array: ""
+
+    # Communication settings
+    baudrate: 128000
+
+    # LiDAR type settings
+    # lidar_type: 1 = TYPE_TRIANGLE (X4, X2, X2L)
+    # lidar_type: 0 = TYPE_TOF (G4, G6, TG series)
+    lidar_type: 1
+    device_type: 0              # 0 = serial
+    sample_rate: 5              # 5000 samples/sec for X4
+
+    # Scan behavior
+    abnormal_check_count: 4
+    fixed_resolution: true
+    reversion: false
+    inverted: true              # Flip scan direction if mounted upside down
+    auto_reconnect: true
+    isSingleChannel: false
+    intensity: false            # X4 doesn't have intensity data
+    support_motor_dtr: true     # Control motor via DTR pin
+
+    # Scan range (degrees)
+    angle_max: 180.0
+    angle_min: -180.0
+
+    # Distance range (meters)
+    range_max: 10.0
+    range_min: 0.12             # X4 minimum range
+
+    # Scan frequency (Hz)
+    # X4 supports 6-12Hz, 7Hz is a good balance
+    frequency: 7.0
+
+    # Invalid readings
+    invalid_range_is_inf: false

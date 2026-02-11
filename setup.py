@@ -54,13 +54,29 @@ setup(
     # ------------------------
     entry_points={
         'console_scripts': [
+            # Legacy smart-rover architecture
             'dock = coven_core.dock_node:main',
             'module = coven_core.module_node:main',
             'coven_dock = coven_core.dock_node:main',
             'coven_module = coven_core.module_node:main',
+            # Dock-centric architecture
+            'simplified_module = coven_core.simplified_module_node:main',
+            'coven_simple_module = coven_core.simplified_module_node:main',
+            'simplified_dock = coven_core.simplified_dock_node:main',
+            'coven_simple_dock = coven_core.simplified_dock_node:main',
+            # Dock-centric architecture (offline SLAM, sensor batch processing)
+            'offline_slam_processor = coven_core.offline_slam_processor:main',
+            'frontier_dispatcher = coven_core.frontier_dispatcher:main',
+            # Hardware drivers (for physical CubeRover deployment)
+            'motor_driver = coven_core.motor_driver:main',
+            'encoder_odom = coven_core.encoder_odom:main',
+            # Utilities
             'spawn_module = coven_core.spawn_module:main',
             'odom_tf_broadcaster = coven_core.odom_tf_broadcaster:main',
             'scan_frame_republisher = coven_core.scan_frame_republisher:main',
+            'topic_relay = coven_core.topic_relay:main',
+            # Lightweight rover bridge (TCP to ROS2)
+            'rover_bridge = coven_core.rover_bridge:main',
         ],
     },
 )

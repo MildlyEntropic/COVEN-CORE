@@ -23,6 +23,7 @@ Date: September 2025
 # --- Standard library ---
 import logging
 import random
+import time
 from dataclasses import dataclass
 from enum import Enum
 from typing import Optional, List, Tuple, Dict
@@ -53,7 +54,7 @@ class DockState(Enum):
 
 
 class ModuleState(Enum):
-    """FSM states for a COVEN module."""
+    """FSM states for a COVEN module (legacy - used in smart-rover architecture)."""
 
     BOOT = 0
     IDENTIFY = 1
@@ -62,6 +63,19 @@ class ModuleState(Enum):
     REJECTED = 4
     DISCONNECTED = 5
     FIELD_OPS = 6
+
+
+class SimplifiedModuleState(Enum):
+    """Simplified FSM states for dock-centric architecture.
+
+    In dock-centric mode, rovers are simple sensor/actuator nodes.
+    Heavy computation (SLAM, Nav2, exploration) runs on the dock.
+    """
+
+    BOOT = 0      # Starting up, not yet registered
+    READY = 1     # Registered with dock, awaiting commands
+    ACTIVE = 2    # Executing velocity commands
+    ERROR = 3     # Error state, needs intervention
 
 
 # ------------------------
@@ -157,35 +171,122 @@ COVEN_NAMES = [
     "The_Lilim",
 ]
 
-# Track used names to avoid duplicates during runtime
-_used_witch_names: set = set()
+# Track used names with lifecycle management
+# Structure: {name: {"status": "active"|"missing"|"available", "last_seen": timestamp, "timeout": seconds}}
+_witch_name_registry: Dict[str, dict] = {}
 _used_coven_names: set = set()
 
 
-def get_witch_name() -> str:
+def get_witch_name(returning_name: Optional[str] = None) -> str:
     """
-    Get a random available witch name for a module.
+    Get a witch name for a module, supporting reconnection scenarios.
 
-    Returns unique names randomly selected from the pool.
-    Once all names are used, the pool resets.
+    Lifecycle states:
+    - "active": Currently connected rover
+    - "missing": Rover disconnected but within timeout window (held for reabsorption)
+    - "available": Can be assigned to new rovers
+
+    Args:
+        returning_name: If rover claims to be a known witch, check if it can reclaim
 
     Returns:
         A witch name string (e.g., "Baba_Yaga", "Hermione_Granger")
     """
-    global _used_witch_names
+    global _witch_name_registry
+    now = time.time()
 
-    # Get available names (not yet used)
-    available = [n for n in WITCH_NAMES if n not in _used_witch_names]
+    # Check if this is a returning rover trying to reclaim their name
+    if returning_name and returning_name in _witch_name_registry:
+        entry = _witch_name_registry[returning_name]
+        if entry["status"] in ("missing", "active"):
+            # Welcome back! Reabsorb the rover
+            entry["status"] = "active"
+            entry["last_seen"] = now
+            return returning_name
+        # Name was released and possibly reassigned - fall through to assign new name
 
-    # If all names used, reset the pool
+    # First, check for any "missing" rovers that have exceeded timeout
+    # and mark them as "available" for reassignment
+    _cleanup_expired_names()
+
+    # Get available names (not in registry, or marked available)
+    used_names = {name for name, entry in _witch_name_registry.items()
+                  if entry["status"] in ("active", "missing")}
+    available = [n for n in WITCH_NAMES if n not in used_names]
+
+    # If all names exhausted, look for "missing" names past their timeout
     if not available:
-        _used_witch_names.clear()
+        # Force cleanup and try again
+        available = [n for n in WITCH_NAMES if n not in
+                    {name for name, entry in _witch_name_registry.items()
+                     if entry["status"] == "active"}]
+
+    # If STILL no names (all active), reset entirely (shouldn't happen with reasonable fleet)
+    if not available:
+        _witch_name_registry.clear()
         available = WITCH_NAMES.copy()
 
     # Pick randomly from available
     name = random.choice(available)
-    _used_witch_names.add(name)
+    _witch_name_registry[name] = {
+        "status": "active",
+        "last_seen": now,
+        "timeout": 0.0,  # Set when rover disconnects
+    }
     return name
+
+
+def mark_witch_missing(name: str, timeout_secs: float):
+    """
+    Mark a witch as missing (disconnected) but hold their name for potential return.
+
+    Args:
+        name: The witch name to mark as missing
+        timeout_secs: How long to hold the name before allowing reassignment
+    """
+    global _witch_name_registry
+    if name in _witch_name_registry:
+        _witch_name_registry[name]["status"] = "missing"
+        _witch_name_registry[name]["last_seen"] = time.time()
+        _witch_name_registry[name]["timeout"] = timeout_secs
+
+
+def mark_witch_active(name: str):
+    """Mark a witch as active (connected)."""
+    global _witch_name_registry
+    if name in _witch_name_registry:
+        _witch_name_registry[name]["status"] = "active"
+        _witch_name_registry[name]["last_seen"] = time.time()
+
+
+def release_witch_name(name: str):
+    """Immediately release a witch name for reassignment."""
+    global _witch_name_registry
+    if name in _witch_name_registry:
+        _witch_name_registry[name]["status"] = "available"
+
+
+def is_witch_known(name: str) -> bool:
+    """Check if a witch name is known to the system (active or missing)."""
+    return name in _witch_name_registry and _witch_name_registry[name]["status"] in ("active", "missing")
+
+
+def get_witch_status(name: str) -> Optional[str]:
+    """Get the status of a witch name, or None if not in registry."""
+    if name in _witch_name_registry:
+        return _witch_name_registry[name]["status"]
+    return None
+
+
+def _cleanup_expired_names():
+    """Mark any 'missing' names that have exceeded their timeout as 'available'."""
+    global _witch_name_registry
+    now = time.time()
+    for name, entry in _witch_name_registry.items():
+        if entry["status"] == "missing":
+            elapsed = now - entry["last_seen"]
+            if elapsed > entry["timeout"]:
+                entry["status"] = "available"
 
 
 def get_coven_name() -> str:
@@ -216,8 +317,8 @@ def get_coven_name() -> str:
 
 def reset_naming():
     """Reset naming system (useful for testing)."""
-    global _used_witch_names, _used_coven_names
-    _used_witch_names.clear()
+    global _witch_name_registry, _used_coven_names
+    _witch_name_registry.clear()
     _used_coven_names.clear()
 
 
@@ -482,6 +583,128 @@ class CoverageMissionComplete:
 
 
 # ------------------------
+# --- Dock-Centric Messages ---
+# ------------------------
+# These messages support the dock-centric architecture where:
+# - Rovers are simple sensor/actuator nodes (Pi Zero 2W)
+# - Dock runs all heavy computation: SLAM, Nav2, exploration planning
+# - Communication is sensor data up, velocity commands down
+
+@dataclass
+class RoverRegistration:
+    """Rover announces itself to the dock on boot.
+
+    Sent once when rover transitions from BOOT to READY state.
+    Dock uses this to track available rovers and their capabilities.
+    """
+
+    module_id: str                       # Unique rover identifier
+    module_type: str = "lidar_rover"     # Rover type (lidar_rover, camera_rover, etc.)
+    firmware_version: str = "1.0.0"      # Firmware/software version
+    capabilities: Optional[List[str]] = None  # ["lidar", "odom", "camera", etc.]
+    initial_battery: float = 1.0         # Battery level at registration
+
+    def __post_init__(self):
+        if self.capabilities is None:
+            self.capabilities = ["lidar", "odom"]
+
+
+@dataclass
+class RoverRegistrationAck:
+    """Dock acknowledges rover registration.
+
+    Sent in response to RoverRegistration. Provides rover with
+    its assigned namespace and any dock-side configuration.
+    """
+
+    module_id: str                       # Echoed back for confirmation
+    accepted: bool = True                # False if dock rejects rover
+    assigned_namespace: str = ""         # Namespace to use (usually module_id)
+    reason: str = ""                     # Rejection reason if not accepted
+
+
+@dataclass
+class SensorData:
+    """Bundled sensor data from rover to dock.
+
+    Rovers publish this at regular intervals. Contains all sensor
+    readings the dock needs for SLAM and navigation. Using a single
+    bundled message reduces topic overhead vs separate topics.
+    """
+
+    module_id: str
+    timestamp: float = 0.0               # ROS time when captured
+
+    # LiDAR scan (compressed)
+    scan_ranges: Optional[List[float]] = None   # Range readings
+    scan_angle_min: float = 0.0
+    scan_angle_max: float = 6.28         # 2*pi for 360 degree
+    scan_angle_increment: float = 0.0175  # ~1 degree
+
+    # Odometry
+    odom_x: float = 0.0
+    odom_y: float = 0.0
+    odom_theta: float = 0.0              # Heading in radians
+    odom_vx: float = 0.0                 # Linear velocity
+    odom_vtheta: float = 0.0             # Angular velocity
+
+    # Battery
+    battery_level: float = 1.0           # 0.0 - 1.0
+
+    def __post_init__(self):
+        if self.scan_ranges is None:
+            self.scan_ranges = []
+
+
+@dataclass
+class VelocityCommand:
+    """Velocity command from dock to rover.
+
+    Dock computes navigation and sends velocity commands.
+    Rover simply executes these without local planning.
+    """
+
+    module_id: str                       # Target rover
+    linear_x: float = 0.0                # Forward velocity (m/s)
+    angular_z: float = 0.0               # Rotation velocity (rad/s)
+    timestamp: float = 0.0               # When command was generated
+    timeout: float = 0.5                 # Stop if no new command within timeout
+
+
+@dataclass
+class RoverStatus:
+    """Simplified status message from rover to dock.
+
+    Lightweight periodic update. More detailed than heartbeat,
+    less verbose than full SensorData.
+    """
+
+    module_id: str
+    state: str = "READY"                 # SimplifiedModuleState as string
+    battery_level: float = 1.0
+    is_moving: bool = False              # Currently executing velocity
+    last_cmd_age: float = 0.0            # Seconds since last velocity command
+    error_msg: str = ""                  # Error details if state is ERROR
+
+
+@dataclass
+class DockCommand:
+    """High-level command from dock to rover.
+
+    Used for state transitions and mission control,
+    not for continuous velocity commands.
+    """
+
+    module_id: str
+    command: str                         # "start", "stop", "return", "shutdown"
+    parameters: Optional[Dict] = None    # Command-specific parameters
+
+    def __post_init__(self):
+        if self.parameters is None:
+            self.parameters = {}
+
+
+# ------------------------
 # --- Encode / Decode ---
 # ------------------------
 # These wrapper functions use the generic serializer from coven_core.serialization
@@ -648,3 +871,73 @@ def coverage_mission_complete_encode(cmc: CoverageMissionComplete) -> str:
 def coverage_mission_complete_decode(msg: String) -> Optional[CoverageMissionComplete]:
     """Decode CoverageMissionComplete from ROS String message."""
     return _generic_decode(msg, CoverageMissionComplete)
+
+
+# ------------------------
+# --- Dock-Centric Encode/Decode ---
+# ------------------------
+
+# ROVER_REGISTRATION
+def rover_registration_encode(reg: RoverRegistration) -> str:
+    """Encode RoverRegistration to JSON string."""
+    return _generic_encode(reg)
+
+
+def rover_registration_decode(msg: String) -> Optional[RoverRegistration]:
+    """Decode RoverRegistration from ROS String message."""
+    return _generic_decode(msg, RoverRegistration)
+
+
+# ROVER_REGISTRATION_ACK
+def rover_registration_ack_encode(ack: RoverRegistrationAck) -> str:
+    """Encode RoverRegistrationAck to JSON string."""
+    return _generic_encode(ack)
+
+
+def rover_registration_ack_decode(msg: String) -> Optional[RoverRegistrationAck]:
+    """Decode RoverRegistrationAck from ROS String message."""
+    return _generic_decode(msg, RoverRegistrationAck)
+
+
+# SENSOR_DATA
+def sensor_data_encode(sd: SensorData) -> str:
+    """Encode SensorData to JSON string."""
+    return _generic_encode(sd)
+
+
+def sensor_data_decode(msg: String) -> Optional[SensorData]:
+    """Decode SensorData from ROS String message."""
+    return _generic_decode(msg, SensorData)
+
+
+# VELOCITY_COMMAND
+def velocity_command_encode(vc: VelocityCommand) -> str:
+    """Encode VelocityCommand to JSON string."""
+    return _generic_encode(vc)
+
+
+def velocity_command_decode(msg: String) -> Optional[VelocityCommand]:
+    """Decode VelocityCommand from ROS String message."""
+    return _generic_decode(msg, VelocityCommand)
+
+
+# ROVER_STATUS
+def rover_status_encode(rs: RoverStatus) -> str:
+    """Encode RoverStatus to JSON string."""
+    return _generic_encode(rs)
+
+
+def rover_status_decode(msg: String) -> Optional[RoverStatus]:
+    """Decode RoverStatus from ROS String message."""
+    return _generic_decode(msg, RoverStatus)
+
+
+# DOCK_COMMAND
+def dock_command_encode(dc: DockCommand) -> str:
+    """Encode DockCommand to JSON string."""
+    return _generic_encode(dc)
+
+
+def dock_command_decode(msg: String) -> Optional[DockCommand]:
+    """Decode DockCommand from ROS String message."""
+    return _generic_decode(msg, DockCommand)

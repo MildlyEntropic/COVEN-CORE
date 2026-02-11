@@ -28,9 +28,13 @@ import threading
 import uuid
 from datetime import datetime
 
+# --- Third-party ---
+import numpy as np
+
 # --- Third-party (ROS2) ---
 import rclpy
 from rclpy.node import Node
+from nav_msgs.msg import OccupancyGrid
 from std_msgs.msg import String
 
 # --- Local (COVEN) ---
@@ -135,6 +139,13 @@ class Dock(Node):
         # Coverage status subscription
         self.sub_coverage_status = self.create_subscription(
             String, '/coven/coverage_status', self.on_coverage_status, 10
+        )
+
+        # Subscribe to SLAM map for global coverage calculation
+        # Rovers return raw LiDAR data, dock runs SLAM, dock reads the map
+        self.current_map = None
+        self.map_sub = self.create_subscription(
+            OccupancyGrid, '/map', self._map_callback, 10
         )
 
         self.ident_timer = self.create_timer(self.ident_period, self.broadcast_identify)
@@ -492,6 +503,39 @@ class Dock(Node):
             self.get_logger().error(f"Failed to save map data: {e}")
 
     # ------------------------
+    # SLAM MAP COVERAGE CALCULATION
+    # ------------------------
+    def _map_callback(self, msg: OccupancyGrid):
+        """Update current map from SLAM and recalculate global coverage."""
+        self.current_map = msg
+        self._update_global_coverage()
+
+    def _update_global_coverage(self):
+        """Calculate global coverage from SLAM occupancy grid.
+
+        Coverage = known cells / total cells, where known means free (0) or
+        occupied (100), not unknown (-1).
+        """
+        if self.current_map is None:
+            return
+
+        data = np.array(self.current_map.data)
+        # Known cells: value >= 0 (free=0, occupied=100, unknown=-1)
+        known = np.sum(data >= 0)
+        total = len(data)
+
+        with self._coverage_lock:
+            old_coverage = self.global_coverage
+            self.global_coverage = known / total if total > 0 else 0.0
+
+            # Log significant coverage changes (>5%)
+            if abs(self.global_coverage - old_coverage) > 0.05:
+                self.get_logger().info(
+                    f"SLAM map coverage: {self.global_coverage:.1%} "
+                    f"({known}/{total} cells known)"
+                )
+
+    # ------------------------
     # COVERAGE MISSION COORDINATION
     # ------------------------
     def on_coverage_status(self, msg: String):
@@ -691,22 +735,19 @@ class Dock(Node):
             if not self.coverage_mission_active:
                 return
 
-            # Update rover's coverage contribution
-            coverage = tc.exploration_metrics.get("coverage", 0.0)
-            self.rover_coverage[tc.module_id] = coverage
+            # Store rover's reported coverage (for logging only - Rust rovers report 0.0)
+            rover_coverage = tc.exploration_metrics.get("coverage", 0.0)
+            self.rover_coverage[tc.module_id] = rover_coverage
 
-            # Store map data for merging (if present)
+            # Store map data if present (legacy - not used with SLAM-based coverage)
             if tc.map_data:
                 self.rover_maps[tc.module_id] = tc.map_data
 
-            # Calculate global coverage (simple average for now)
-            # TODO: Implement proper map merging for accurate coverage
-            if self.rover_coverage:
-                self.global_coverage = sum(self.rover_coverage.values()) / len(self.rover_coverage)
-
+            # Global coverage is calculated from SLAM map via _map_callback
+            # No averaging of rover-reported values (Rust rovers report 0.0)
             self.get_logger().info(
-                f"{COLOR_GREEN}Coverage update from {tc.module_id}: "
-                f"rover={coverage:.1%}, global={self.global_coverage:.1%} "
+                f"{COLOR_GREEN}Rover {tc.module_id} returned. "
+                f"Global coverage from SLAM: {self.global_coverage:.1%} "
                 f"(target: {self.coverage_target:.1%}){COLOR_RESET}"
             )
 
