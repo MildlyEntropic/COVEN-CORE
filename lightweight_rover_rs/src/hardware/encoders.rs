@@ -447,8 +447,9 @@ impl EncoderReader {
 
     /// Get ticks per revolution (for batch config).
     pub fn ticks_per_rev(&self) -> u16 {
-        // 4x quadrature resolution
-        (self.meters_per_tick / (2.0 * std::f64::consts::PI * self.wheel_radius) * 4.0) as u16
+        // circumference / meters_per_tick = ticks per revolution (with 4x quadrature)
+        let circumference = 2.0 * std::f64::consts::PI * self.wheel_radius;
+        (circumference / self.meters_per_tick) as u16
     }
 
     /// Get wheel radius in mm.

@@ -324,12 +324,14 @@ impl LyapunovNavigator {
     }
 
     /// Find minimum range in scan (for emergency stop).
+    /// Returns f64::INFINITY if no valid ranges (allows operation to continue).
     fn find_min_range(&self, ranges: &[f64]) -> f64 {
         ranges
             .iter()
             .filter(|r| r.is_finite() && **r > 0.0)
             .cloned()
-            .fold(f64::INFINITY, f64::min)
+            .reduce(f64::min)
+            .unwrap_or(f64::INFINITY)
     }
 
     /// Compute escape velocity when too close to obstacle.
@@ -555,10 +557,10 @@ impl Default for WaypointFollower {
 
 /// Detects when robot is stuck (not making progress).
 struct StuckDetector {
-    /// Last recorded X position.
-    last_x: f64,
-    /// Last recorded Y position.
-    last_y: f64,
+    /// Last recorded X position (None until first measurement).
+    last_x: Option<f64>,
+    /// Last recorded Y position (None until first measurement).
+    last_y: Option<f64>,
     /// Counter for consecutive stuck detections.
     stuck_count: u32,
     /// Total update calls.
@@ -569,8 +571,8 @@ impl StuckDetector {
     /// Create a new stuck detector.
     fn new() -> Self {
         Self {
-            last_x: 0.0,
-            last_y: 0.0,
+            last_x: None,
+            last_y: None,
             stuck_count: 0,
             update_count: 0,
         }
@@ -578,6 +580,8 @@ impl StuckDetector {
 
     /// Reset the stuck detector.
     fn reset(&mut self) {
+        self.last_x = None;
+        self.last_y = None;
         self.stuck_count = 0;
         self.update_count = 0;
     }
@@ -586,17 +590,23 @@ impl StuckDetector {
     fn update(&mut self, x: f64, y: f64, cmd: &VelocityCmd) -> bool {
         self.update_count += 1;
 
-        // Check every ~1 second (at 50Hz control rate)
-        if !self.update_count.is_multiple_of(50) {
+        // Check every ~1 second (at 20Hz control rate)
+        if self.update_count % 20 != 0 {
             return false;
         }
 
-        let dx = x - self.last_x;
-        let dy = y - self.last_y;
-        let dist_moved = (dx * dx + dy * dy).sqrt();
+        // Calculate distance moved (first measurement assumes moving)
+        let dist_moved = match (self.last_x, self.last_y) {
+            (Some(lx), Some(ly)) => {
+                let dx = x - lx;
+                let dy = y - ly;
+                (dx * dx + dy * dy).sqrt()
+            }
+            _ => f64::INFINITY, // First measurement - assume moving
+        };
 
-        self.last_x = x;
-        self.last_y = y;
+        self.last_x = Some(x);
+        self.last_y = Some(y);
 
         // If we're commanding motion but not moving, we might be stuck
         if cmd.linear.abs() > 0.05 && dist_moved < 0.02 {

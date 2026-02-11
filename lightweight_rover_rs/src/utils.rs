@@ -41,13 +41,19 @@ pub fn now_secs() -> f64 {
 /// Normalize angle to [-π, π] range.
 ///
 /// Used for heading/theta values in odometry and navigation.
+/// Guards against infinite loops from NaN/infinity input.
 #[inline]
 pub fn normalize_angle(angle: f64) -> f64 {
-    let mut a = angle;
-    while a > PI {
-        a -= 2.0 * PI;
+    // Guard against non-finite values to prevent infinite loop
+    if !angle.is_finite() {
+        return 0.0;
     }
-    while a < -PI {
+
+    // Use modulo for efficient single-step normalization
+    let mut a = angle % (2.0 * PI);
+    if a > PI {
+        a -= 2.0 * PI;
+    } else if a < -PI {
         a += 2.0 * PI;
     }
     a

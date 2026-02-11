@@ -486,14 +486,33 @@ impl DockMessage {
                     None
                 }
             }
-            "ENABLE_POWER" if parts.len() >= 3 => Some(DockMessage::EnablePower {
-                voltage: parts[1].parse().unwrap_or(12),
-                duration: parts[2].parse().unwrap_or(0.0),
-            }),
-            "CMD_VEL" if parts.len() >= 3 => Some(DockMessage::CmdVel {
-                linear: parts[1].parse().unwrap_or(0.0),
-                angular: parts[2].parse().unwrap_or(0.0),
-            }),
+            "ENABLE_POWER" if parts.len() >= 3 => {
+                // Parse voltage with validation (0 = disable, max 15V for 3S LiPo safety)
+                let voltage: u32 = parts[1].parse().ok()?;
+                if voltage > 15 {
+                    return None; // Reject unsafe voltage values
+                }
+                // Parse duration with validation (must be non-negative)
+                let duration: f64 = parts[2].parse().ok()?;
+                if duration < 0.0 || !duration.is_finite() {
+                    return None;
+                }
+                Some(DockMessage::EnablePower { voltage, duration })
+            }
+            "CMD_VEL" if parts.len() >= 3 => {
+                // Parse velocities with validation
+                let linear: f64 = parts[1].parse().ok()?;
+                let angular: f64 = parts[2].parse().ok()?;
+                // Reject non-finite values (NaN, infinity)
+                if !linear.is_finite() || !angular.is_finite() {
+                    return None;
+                }
+                // Clamp to reasonable rover limits (2 m/s linear, π rad/s angular)
+                Some(DockMessage::CmdVel {
+                    linear: linear.clamp(-2.0, 2.0),
+                    angular: angular.clamp(-std::f64::consts::PI, std::f64::consts::PI),
+                })
+            }
             _ => {
                 // Try JSON parsing for complex messages
                 serde_json::from_str(data).ok()

@@ -87,7 +87,7 @@ impl HardwareComponent {
                 "Check PWM is enabled in /boot/config.txt: dtoverlay=pwm-2chan",
                 "Verify /sys/class/pwm/pwmchip0 exists",
                 "Check user has permission: ls -la /sys/class/pwm/",
-                "Try: sudo chmod -R 777 /sys/class/pwm/pwmchip0/",
+                "Add user to appropriate group or run with sudo",
             ],
             Self::Serial => &[
                 "Check serial port exists: ls -la /dev/ttyUSB* /dev/ttyAMA*",

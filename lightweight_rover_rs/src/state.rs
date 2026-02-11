@@ -3,11 +3,22 @@
 //! Implements the rover-side FSM for the COVEN protocol lifecycle.
 //! Coordinates hardware, navigation, and dock communication.
 //!
+//! ## IMPORTANT: Communication Architecture
+//!
+//! **There is NO wireless communication on COVEN rovers.**
+//!
+//! The rover communicates with the dock ONLY when physically docked via the
+//! COVEN Type-A 9-pin connector. UART is used over the connector's data lines.
+//! When deployed, the rover operates completely autonomously with no link to dock.
+//!
+//! Lifecycle (per Interface Spec v0.2):
+//!   DISCONNECTED → DETECTED → IDENTIFY → VERIFIED → ENABLED → NORMAL_OPERATIONS
+//!
 //! Responsibilities:
 //! - Manage state transitions (Boot → Identify → WaitVerify → Normal → FieldOps)
-//! - Handle incoming dock messages and generate responses
-//! - Coordinate Lyapunov-based navigation during missions
-//! - Collect raw sensor data for batch upload to dock
+//! - Handle incoming dock messages and generate responses via UART (when docked)
+//! - Coordinate Lyapunov-based navigation during missions (autonomous, no comms)
+//! - Collect raw sensor data for batch upload to dock (when docked)
 //! - Monitor battery and enforce safety timeouts
 //!
 //! Author: Alexander Shultis
@@ -28,10 +39,10 @@ use tracing::{debug, info, warn};
 
 // --- Local ---
 use crate::config::RoverConfig;
+use crate::dock_uart::DockUart;
 use crate::hardware::{BatteryReader, Hardware};
 use crate::lidar::LidarDriver;
 use crate::navigation::{NavState, WaypointFollower};
-use crate::network::DockConnection;
 use crate::protocol::{DockMessage, RawSensorSample, RoverMessage, RoverState, SensorBatch};
 use crate::utils::now_secs;
 
@@ -65,6 +76,12 @@ struct MissionData {
 }
 
 /// Main rover state machine coordinating all subsystems.
+///
+/// ## Communication Note
+///
+/// The `dock` field is a UART connection, NOT WiFi/Ethernet.
+/// Communication only occurs when physically docked via the 9-pin connector.
+/// When deployed on a mission, the rover operates autonomously with no comms.
 pub struct RoverStateMachine {
     /// Rover configuration loaded from TOML.
     config: RoverConfig,
@@ -72,13 +89,15 @@ pub struct RoverStateMachine {
     hardware: Hardware,
     /// LiDAR driver for obstacle detection.
     lidar: LidarDriver,
-    /// TCP connection to dock.
-    dock: DockConnection,
+    /// UART connection to dock (via 9-pin connector, NOT wireless).
+    dock: DockUart,
     /// Optional battery reader (may not be present).
     battery: Option<BatteryReader>,
 
     /// Current FSM state.
     state: RoverState,
+    /// Time when current state was entered (for timeouts).
+    state_entered_at: Instant,
     /// Current battery percentage.
     battery_pct: f64,
 
@@ -107,7 +126,9 @@ pub struct RoverStateMachine {
 
 impl RoverStateMachine {
     /// Create a new rover state machine with the given configuration.
-    pub fn new(config: RoverConfig, hardware: Hardware, dock: DockConnection) -> Self {
+    ///
+    /// Note: `dock` is a UART connection via the 9-pin connector, NOT wireless.
+    pub fn new(config: RoverConfig, hardware: Hardware, dock: DockUart) -> Self {
         let lidar = LidarDriver::new(&config.hardware.lidar);
 
         // Try to initialize battery reader (may fail if ADC not present)
@@ -133,6 +154,7 @@ impl RoverStateMachine {
             dock,
             battery,
             state: RoverState::Boot,
+            state_entered_at: Instant::now(),
             battery_pct: initial_battery,
             assigned_name: persisted_name, // Load from previous session if available
             navigator,
@@ -241,11 +263,24 @@ impl RoverStateMachine {
                 RoverState::Identify => {
                     // Wait for IDENTIFY_REQ from dock
                     // (handled in handle_dock_message)
+
+                    // Timeout after 30 seconds - connection may have failed
+                    if self.state_entered_at.elapsed() > Duration::from_secs(30) {
+                        warn!("Identify timeout - no response from dock, retrying connection");
+                        self.dock.connect().await?;
+                        self.state_entered_at = Instant::now();
+                    }
                 }
 
                 RoverState::WaitVerify => {
                     // Wait for VERIFY_REQ from dock
                     // (handled in handle_dock_message)
+
+                    // Timeout after 30 seconds - dock may have missed our response
+                    if self.state_entered_at.elapsed() > Duration::from_secs(30) {
+                        warn!("WaitVerify timeout - returning to Identify state");
+                        self.transition_to(RoverState::Identify);
+                    }
                 }
 
                 RoverState::Normal => {
@@ -327,7 +362,7 @@ impl RoverStateMachine {
                         // Check if navigation completed
                         match self.navigator.state() {
                             NavState::Arrived => {
-                                info!("Navigation complete - returning to dock");
+                                info!("Navigation complete - mission successful");
                                 self.complete_mission(true).await?;
                             }
                             NavState::Stuck => {
@@ -336,6 +371,12 @@ impl RoverStateMachine {
                             }
                             _ => {}
                         }
+                    } else {
+                        // CRITICAL SAFETY: No LiDAR data - stop immediately
+                        // Cannot navigate safely without obstacle detection
+                        warn!("No LiDAR scan available - stopping motors for safety");
+                        self.hardware.motors.stop();
+                        self.last_cmd_vel = Instant::now();
                     }
 
                     // Safety stop if no recent commands
@@ -345,9 +386,29 @@ impl RoverStateMachine {
                     }
                 }
 
-                RoverState::Rejected | RoverState::Disconnected => {
-                    // Error state - stop motors
+                RoverState::Rejected => {
+                    // Error state - stop motors and wait for manual intervention
                     self.hardware.motors.stop();
+                    // After 60 seconds, retry verification
+                    if self.state_entered_at.elapsed() > Duration::from_secs(60) {
+                        info!("Rejected state timeout - retrying identification");
+                        self.transition_to(RoverState::Identify);
+                    }
+                }
+
+                RoverState::Disconnected => {
+                    // Disconnected from dock - stop motors and attempt reconnection
+                    self.hardware.motors.stop();
+                    // After 5 seconds, try to reconnect
+                    if self.state_entered_at.elapsed() > Duration::from_secs(5) {
+                        info!("Attempting reconnection to dock...");
+                        if self.dock.connect().await.is_ok() {
+                            self.transition_to(RoverState::Identify);
+                        } else {
+                            // Reset timer and try again
+                            self.state_entered_at = Instant::now();
+                        }
+                    }
                 }
             }
 
@@ -684,6 +745,7 @@ impl RoverStateMachine {
     fn transition_to(&mut self, new_state: RoverState) {
         info!(from = %self.state, to = %new_state, "State transition");
         self.state = new_state;
+        self.state_entered_at = Instant::now();
     }
 
     /// Complete current mission and return to Normal state.

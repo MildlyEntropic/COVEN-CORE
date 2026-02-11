@@ -3,10 +3,24 @@
 //! Defines configuration structures for all rover subsystems.
 //! Supports loading from TOML files with sensible defaults.
 //!
+//! ## IMPORTANT: Communication Architecture
+//!
+//! **There is NO wireless communication (WiFi, Ethernet, RF) on COVEN rovers.**
+//!
+//! Rovers communicate with the dock ONLY when physically connected via the
+//! COVEN Type-A 9-pin connector. Communication uses UART over the connector's
+//! data lines. The rover operates completely autonomously when deployed.
+//!
+//! This is a **data-mule architecture**: rovers collect sensor data during
+//! missions and upload it to the dock via UART when they return and dock.
+//!
+//! See: COVEN Interface Specification v0.2 (20250808.ShultisAnder.COVEN.CAD.InterfaceSpec.pdf)
+//!
 //! Responsibilities:
 //! - Define motor driver pin assignments (TB6612FNG)
 //! - Define encoder pin assignments and parameters
 //! - Define LiDAR serial port configuration
+//! - Define dock UART communication parameters
 //! - Define battery monitoring parameters
 //! - Define navigation tuning parameters
 //! - Define control loop timing
@@ -31,6 +45,12 @@ use serde::{Deserialize, Serialize};
 // ------------------------
 
 /// Main configuration structure for the rover.
+///
+/// ## Communication Note
+///
+/// COVEN rovers do NOT use WiFi, Ethernet, or any wireless communication.
+/// Communication with the dock occurs ONLY via UART when physically docked.
+/// See `dock_uart` field for UART configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RoverConfig {
     /// Unique rover identifier (e.g., "Morgan_Le_Fay")
@@ -39,11 +59,10 @@ pub struct RoverConfig {
     /// COVEN network name (e.g., "The_Graeae")
     pub coven_name: String,
 
-    /// Dock IP address
-    pub dock_address: String,
-
-    /// Dock TCP port
-    pub dock_port: u16,
+    /// Dock UART communication configuration.
+    /// NOTE: This is NOT WiFi/Ethernet. Communication only occurs when
+    /// physically docked via the 9-pin COVEN connector.
+    pub dock_uart: DockUartConfig,
 
     /// Hardware configuration
     pub hardware: HardwareConfig,
@@ -138,6 +157,34 @@ pub struct BatteryConfig {
     pub empty_voltage: f64,
 }
 
+/// Dock UART communication configuration.
+///
+/// ## IMPORTANT: NO WIRELESS COMMUNICATION
+///
+/// COVEN rovers do NOT use WiFi, Ethernet, RF, or any wireless protocol.
+/// Communication with the dock occurs ONLY via UART when the rover is
+/// physically connected to the dock via the COVEN Type-A 9-pin connector.
+///
+/// The rover operates completely autonomously during missions with no
+/// communication link to the dock. This is the **data-mule architecture**.
+///
+/// Protocol: COVEN Interface Specification v0.2
+/// - Frame format: [0x7E] [TYPE] [LEN] [PAYLOAD] [CRC] [0x7F]
+/// - Physical layer: UART via 9-pin connector pins 7/8 (ID/Sense lines)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DockUartConfig {
+    /// Serial port device path for dock communication.
+    /// This is the UART connected to the 9-pin dock connector.
+    /// Common: "/dev/ttyAMA0" (Pi GPIO UART) or "/dev/ttyS0"
+    pub port: String,
+    /// Baud rate for dock communication.
+    pub baud_rate: u32,
+    /// Retry delay between connection attempts (seconds).
+    pub retry_delay_secs: f64,
+    /// Maximum retry attempts before giving up.
+    pub max_retries: u32,
+}
+
 /// Control loop timing configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TimingConfig {
@@ -187,11 +234,23 @@ impl Default for RoverConfig {
         Self {
             rover_id: "unnamed_rover".to_string(),
             coven_name: "The_Graeae".to_string(),
-            dock_address: "192.168.1.100".to_string(),
-            dock_port: 5555,
+            dock_uart: DockUartConfig::default(),
             hardware: HardwareConfig::default(),
             timing: TimingConfig::default(),
             navigation: NavigationConfig::default(),
+        }
+    }
+}
+
+impl Default for DockUartConfig {
+    fn default() -> Self {
+        Self {
+            // UART connected to 9-pin dock connector
+            // NOTE: This is NOT WiFi or Ethernet. Communication only when docked.
+            port: "/dev/ttyAMA0".to_string(), // Pi GPIO UART
+            baud_rate: 115200,
+            retry_delay_secs: 1.0,
+            max_retries: 10,
         }
     }
 }
@@ -377,7 +436,7 @@ impl RoverConfig {
             ));
         }
 
-        // Sanity checks on values
+        // Sanity checks on motor/encoder values
         if self.hardware.motors.wheel_radius <= 0.0 {
             issues.push("Motor wheel_radius must be positive".to_string());
         }
@@ -389,6 +448,77 @@ impl RoverConfig {
         }
         if self.hardware.encoders.pulses_per_rev == 0 {
             issues.push("Encoder pulses_per_rev must be non-zero".to_string());
+        }
+
+        // Timing validation (prevent division by zero)
+        if self.timing.control_rate <= 0.0 {
+            issues.push("timing.control_rate must be positive (e.g., 20.0)".to_string());
+        }
+        if self.timing.heartbeat_rate <= 0.0 {
+            issues.push("timing.heartbeat_rate must be positive (e.g., 1.0)".to_string());
+        }
+        if self.timing.odom_rate <= 0.0 {
+            issues.push("timing.odom_rate must be positive (e.g., 50.0)".to_string());
+        }
+        if self.timing.cmd_timeout <= 0.0 {
+            issues.push("timing.cmd_timeout must be positive (e.g., 0.5)".to_string());
+        }
+
+        // PWM frequency validation (TB6612FNG: 100Hz - 100kHz)
+        if self.hardware.motors.pwm_frequency < 100.0 || self.hardware.motors.pwm_frequency > 100_000.0 {
+            issues.push(format!(
+                "Motor pwm_frequency {} Hz out of valid range (100-100000 Hz)",
+                self.hardware.motors.pwm_frequency
+            ));
+        }
+
+        // Navigation parameter validation
+        if self.navigation.d_influence <= 0.0 {
+            issues.push("navigation.d_influence must be positive".to_string());
+        }
+        if self.navigation.d_safe <= 0.0 {
+            issues.push("navigation.d_safe must be positive".to_string());
+        }
+        if self.navigation.d_safe >= self.navigation.d_influence {
+            issues.push("navigation.d_safe must be less than d_influence".to_string());
+        }
+        if self.navigation.max_linear <= 0.0 {
+            issues.push("navigation.max_linear must be positive".to_string());
+        }
+        if self.navigation.max_angular <= 0.0 {
+            issues.push("navigation.max_angular must be positive".to_string());
+        }
+
+        // LiDAR range validation
+        if self.hardware.lidar.range_min >= self.hardware.lidar.range_max {
+            issues.push("lidar.range_min must be less than range_max".to_string());
+        }
+
+        // Battery voltage validation
+        if self.hardware.battery.empty_voltage >= self.hardware.battery.full_voltage {
+            issues.push("battery.empty_voltage must be less than full_voltage".to_string());
+        }
+
+        // Dock UART validation
+        // NOTE: COVEN rovers use UART for dock communication, NOT WiFi/Ethernet
+        if self.dock_uart.port.is_empty() {
+            issues.push("dock_uart.port must be specified (e.g., /dev/ttyAMA0)".to_string());
+        }
+        if self.dock_uart.baud_rate == 0 {
+            issues.push("dock_uart.baud_rate must be non-zero".to_string());
+        }
+        // Common baud rates for UART
+        let valid_baud_rates = [9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600];
+        if !valid_baud_rates.contains(&self.dock_uart.baud_rate) {
+            issues.push(format!(
+                "dock_uart.baud_rate {} is non-standard (common: 115200)",
+                self.dock_uart.baud_rate
+            ));
+        }
+
+        // Low battery threshold validation
+        if self.navigation.low_battery_threshold <= 0.0 || self.navigation.low_battery_threshold > 100.0 {
+            issues.push("navigation.low_battery_threshold must be between 0 and 100".to_string());
         }
 
         issues

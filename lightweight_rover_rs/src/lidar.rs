@@ -333,6 +333,9 @@ impl LidarDriver {
 // --- Scan Assembly ---
 // ------------------------
 
+/// Maximum buffer size to prevent memory exhaustion (64KB)
+const MAX_BUFFER_SIZE: usize = 65536;
+
 /// Helper for assembling partial scan packets.
 struct PartialScan {
     /// Incoming byte buffer.
@@ -360,6 +363,14 @@ impl PartialScan {
     fn process(&mut self, data: &[u8], range_min: f64, range_max: f64) -> Option<LaserScan> {
         self.buffer.extend_from_slice(data);
 
+        // Prevent unbounded buffer growth
+        if self.buffer.len() > MAX_BUFFER_SIZE {
+            warn!("LiDAR buffer overflow ({} bytes) - clearing and resyncing", self.buffer.len());
+            self.buffer.clear();
+            self.scan_started = false;
+            return None;
+        }
+
         let mut result = None;
 
         // Look for scan packets
@@ -375,10 +386,19 @@ impl PartialScan {
             }
 
             // Parse packet header
-            let _ct = self.buffer[2];
+            let ct = self.buffer[2];
             let lsn = self.buffer[3] as usize;
+
+            // Sanity check on LSN (YDLiDAR X4 typically has ~40 samples per packet)
+            if lsn == 0 || lsn > 100 {
+                trace!("Invalid LSN value: {}, resyncing", lsn);
+                self.buffer.drain(..2); // Skip header and try again
+                continue;
+            }
+
             let fsa = u16::from_le_bytes([self.buffer[4], self.buffer[5]]);
             let lsa = u16::from_le_bytes([self.buffer[6], self.buffer[7]]);
+            let cs = u16::from_le_bytes([self.buffer[8], self.buffer[9]]);
 
             // Calculate packet size: header(10) + samples(lsn * 2)
             let packet_size = 10 + lsn * 2;
@@ -386,6 +406,23 @@ impl PartialScan {
             if self.buffer.len() < packet_size {
                 // Need more data
                 break;
+            }
+
+            // Validate checksum (XOR of header fields and sample data)
+            let mut xor_check: u16 = 0;
+            xor_check ^= u16::from_le_bytes([self.buffer[0], self.buffer[1]]); // Header
+            xor_check ^= u16::from_le_bytes([ct, lsn as u8]);
+            xor_check ^= fsa;
+            xor_check ^= lsa;
+            for i in 0..lsn {
+                let idx = 10 + i * 2;
+                xor_check ^= u16::from_le_bytes([self.buffer[idx], self.buffer[idx + 1]]);
+            }
+
+            if cs != xor_check {
+                trace!("LiDAR packet checksum mismatch (got {:#06x}, expected {:#06x}), skipping", cs, xor_check);
+                self.buffer.drain(..2); // Skip header and resync
+                continue;
             }
 
             // Extract distance samples

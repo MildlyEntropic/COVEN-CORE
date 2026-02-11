@@ -1,8 +1,21 @@
 //! main.rs — COVEN Rover Daemon
 //!
 //! Lightweight rover controller for COVEN-compliant reconnaissance modules.
-//! No ROS2 dependency - communicates with dock via TCP and controls hardware
-//! directly via rppal (Raspberry Pi Peripheral Access Library).
+//! No ROS2 dependency - controls hardware directly via rppal.
+//!
+//! ## IMPORTANT: Communication Architecture
+//!
+//! **There is NO wireless communication (WiFi, Ethernet, RF) on COVEN rovers.**
+//!
+//! The rover communicates with the dock ONLY when physically docked via the
+//! COVEN Type-A 9-pin connector. Communication uses UART over the connector's
+//! data lines. When deployed on a mission, the rover operates completely
+//! autonomously with no communication link to the dock.
+//!
+//! This is a **data-mule architecture** per COVEN Interface Spec v0.2:
+//! - Rover docks physically and receives mission via UART
+//! - Rover undocks and executes mission autonomously (NO COMMUNICATION)
+//! - Rover returns to dock and uploads sensor data via UART
 //!
 //! Responsibilities:
 //! - Parse command-line arguments and load configuration
@@ -25,12 +38,12 @@
 
 mod config;
 mod diagnostics;
+mod dock_uart;
 mod error;
 mod hardware;
 mod lidar;
 mod mock;
 mod navigation;
-mod network;
 mod protocol;
 mod state;
 mod utils;
@@ -49,7 +62,7 @@ use tracing_subscriber::FmtSubscriber;
 
 // --- Local ---
 use crate::config::RoverConfig;
-use crate::network::DockConnection;
+use crate::dock_uart::{DockUart, DockUartConfig};
 
 // ------------------------
 // --- Data Structures ---
@@ -200,14 +213,23 @@ async fn main() -> Result<()> {
         return run_diagnostics(config).await;
     }
 
-    // Connect to dock
-    let dock = DockConnection::new(&config.dock_address, config.dock_port);
+    // Create dock UART connection
+    // NOTE: This is NOT WiFi/Ethernet. Communication only when physically docked.
+    let dock_uart_config = DockUartConfig {
+        port: config.dock_uart.port.clone(),
+        baud_rate: config.dock_uart.baud_rate,
+        retry_delay: std::time::Duration::from_secs_f64(config.dock_uart.retry_delay_secs),
+        max_retries: config.dock_uart.max_retries,
+    };
+    let dock = DockUart::new(dock_uart_config);
 
     if args.mock {
         info!("Running in MOCK mode (simulated hardware)");
+        info!("NOTE: UART dock communication will not work without physical hardware");
         run_mock_mode(config, dock).await
     } else {
         info!("Running with REAL hardware");
+        info!("NOTE: Dock communication via UART on {} (NOT wireless)", config.dock_uart.port);
         run_real_mode(config, dock).await
     }
 }
@@ -515,9 +537,12 @@ async fn run_diagnostics(config: RoverConfig) -> Result<()> {
 }
 
 /// Run with real hardware on Raspberry Pi.
-async fn run_real_mode(config: RoverConfig, dock: DockConnection) -> Result<()> {
+///
+/// Note: `dock` is a UART connection via 9-pin connector, NOT wireless.
+async fn run_real_mode(config: RoverConfig, dock: DockUart) -> Result<()> {
     use crate::hardware::Hardware;
     use crate::state::RoverStateMachine;
+    use tokio::signal;
 
     // Initialize hardware
     let hardware = Hardware::new(&config)?;
@@ -526,13 +551,26 @@ async fn run_real_mode(config: RoverConfig, dock: DockConnection) -> Result<()> 
     // Create state machine
     let mut rover = RoverStateMachine::new(config, hardware, dock);
 
-    // Run main loop
-    info!("Entering main loop");
-    rover.run().await
+    // Run main loop with signal handling
+    info!("Entering main loop (Ctrl+C to shutdown gracefully)");
+
+    tokio::select! {
+        result = rover.run() => {
+            result
+        }
+        _ = signal::ctrl_c() => {
+            info!("Shutdown signal received - stopping gracefully");
+            // Hardware cleanup happens via Drop trait
+            Ok(())
+        }
+    }
 }
 
 /// Run with mock hardware for desktop testing.
-async fn run_mock_mode(config: RoverConfig, mut dock: DockConnection) -> Result<()> {
+///
+/// Note: In mock mode, we still use DockUart but it won't actually work
+/// without the physical UART hardware - this is mainly for testing logic.
+async fn run_mock_mode(config: RoverConfig, mut dock: DockUart) -> Result<()> {
     use crate::mock::MockHardware;
     use crate::navigation::{NavState, WaypointFollower};
     use crate::protocol::{
@@ -540,10 +578,12 @@ async fn run_mock_mode(config: RoverConfig, mut dock: DockConnection) -> Result<
         SensorBatch,
     };
     use std::time::{Duration, Instant};
+    use tokio::signal;
 
     let mut hardware = MockHardware::new();
     let mut navigator = WaypointFollower::new();
     info!("Mock hardware initialized");
+    info!("Press Ctrl+C to shutdown gracefully");
 
     // Connect to dock
     dock.connect().await?;
@@ -577,6 +617,19 @@ async fn run_mock_mode(config: RoverConfig, mut dock: DockConnection) -> Result<
     let mut last_scan = Instant::now();
 
     loop {
+        // Check for shutdown signal at start of each loop
+        tokio::select! {
+            biased;
+            _ = signal::ctrl_c() => {
+                info!("Shutdown signal received - stopping mock mode gracefully");
+                hardware.stop();
+                return Ok(());
+            }
+            _ = tokio::time::sleep(Duration::ZERO) => {
+                // Continue with loop
+            }
+        }
+
         let loop_start = Instant::now();
 
         // Update mock hardware
