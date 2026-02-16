@@ -3,6 +3,12 @@
 //! Defines message types for dock-rover communication.
 //! The rover is "dumb" - it collects raw sensor data and uploads batches to dock.
 //!
+//! ## Communication Architecture
+//!
+//! **There is NO wireless communication.** Communication occurs ONLY via UART
+//! when the rover is physically docked via the COVEN Type-A 9-pin connector.
+//! During missions, the rover operates completely autonomously with no comms.
+//!
 //! Responsibilities:
 //! - Define rover state enumeration
 //! - Define dock-to-rover message types
@@ -10,7 +16,9 @@
 //! - Define raw sensor data structures for batch upload
 //! - Implement wire format serialization/deserialization
 //!
-//! Wire format: Colon-delimited messages for control, JSON for data batches.
+//! Wire format (per Interface Spec v0.2):
+//!   [0x7E] [TYPE] [LEN] [PAYLOAD] [CRC] [0x7F]
+//! See dock_uart.rs for framing implementation.
 //!
 //! Author: Alexander Shultis
 //! Date: January 2026

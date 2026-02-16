@@ -1,6 +1,21 @@
 """
 cuberover_hardware.py — CubeRover Physical Hardware Implementation for COVEN
 
+!!! DEPRECATED !!!
+This file is deprecated and no longer used. Rovers now run Rust firmware
+(see lightweight_rover_rs/) instead of Python/ROS2. This file is kept for
+reference only and will be removed in a future cleanup.
+
+The Rust implementation has complete hardware drivers:
+- lightweight_rover_rs/src/hardware/motors.rs (TB6612FNG PWM)
+- lightweight_rover_rs/src/hardware/encoders.rs (quadrature decoding)
+- lightweight_rover_rs/src/hardware/battery.rs (I2C ADC)
+- lightweight_rover_rs/src/lidar.rs (YDLiDAR X4)
+
+See: lightweight_rover_rs/src/hardware/ for the active hardware drivers.
+!!! DEPRECATED !!!
+
+Original description:
 Provides hardware operations for physical CubeRover robots.
 Currently contains stubs - to be implemented with actual hardware interfaces.
 

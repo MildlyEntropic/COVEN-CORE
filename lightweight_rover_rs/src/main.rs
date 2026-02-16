@@ -180,7 +180,7 @@ async fn main() -> Result<()> {
     info!("--- Configuration ---");
     info!("  Rover ID: {}", config.rover_id);
     info!("  Coven: {}", config.coven_name);
-    info!("  Dock: {}:{}", config.dock_address, config.dock_port);
+    info!("  Dock UART: {} @ {} baud", config.dock_uart.port, config.dock_uart.baud_rate);
     info!("  Control rate: {} Hz", config.timing.control_rate);
 
     // Validate GPIO configuration
@@ -257,7 +257,7 @@ async fn run_diagnostics(config: RoverConfig) -> Result<()> {
     info!("═══ TEST 0: Configuration Summary ═══");
     info!("  Rover ID: {}", config.rover_id);
     info!("  Coven: {}", config.coven_name);
-    info!("  Dock: {}:{}", config.dock_address, config.dock_port);
+    info!("  Dock UART: {} @ {} baud", config.dock_uart.port, config.dock_uart.baud_rate);
     info!("");
     info!("  GPIO Assignments:");
     info!(
@@ -446,35 +446,40 @@ async fn run_diagnostics(config: RoverConfig) -> Result<()> {
         }
     }
 
-    // Test 6: Network connectivity (just DNS/ping test)
+    // Test 6: UART connectivity to dock (via 9-pin connector)
     info!("");
-    info!("═══ TEST 6: Network Test ═══");
+    info!("═══ TEST 6: Dock UART Test ═══");
     info!(
-        "  Target dock: {}:{}",
-        config.dock_address, config.dock_port
+        "  Target UART: {} @ {} baud",
+        config.dock_uart.port, config.dock_uart.baud_rate
     );
+    info!("  NOTE: Rover must be physically docked via 9-pin connector for this test");
 
-    // Try to resolve/connect (brief test)
-    let addr = format!("{}:{}", config.dock_address, config.dock_port);
-    match tokio::time::timeout(
-        Duration::from_secs(3),
-        tokio::net::TcpStream::connect(&addr),
-    )
-    .await
-    {
-        Ok(Ok(_stream)) => {
-            info!("[PASS] Dock reachable at {}", addr);
-            test_results.push(("Network", "PASS", format!("Connected to {}", addr)));
+    // Check if UART port exists
+    let uart_path = std::path::Path::new(&config.dock_uart.port);
+    if uart_path.exists() {
+        info!("[PASS] UART device {} exists", config.dock_uart.port);
+        test_results.push(("UART", "PASS", format!("Device {} found", config.dock_uart.port)));
+
+        // Try to open the serial port briefly
+        match tokio_serial::new(&config.dock_uart.port, config.dock_uart.baud_rate)
+            .timeout(Duration::from_millis(100))
+            .open()
+        {
+            Ok(_port) => {
+                info!("[PASS] UART port opened successfully");
+                info!("  (Full handshake test requires dock to be powered on)");
+            }
+            Err(e) => {
+                warn!("[WARN] Cannot open UART port: {}", e);
+                warn!("  (Port may be in use or require permissions)");
+            }
         }
-        Ok(Err(e)) => {
-            warn!("[WARN] Cannot connect to dock: {}", e);
-            warn!("  (Dock may not be running yet - this is often OK during setup)");
-            test_results.push(("Network", "WARN", format!("{}", e)));
-        }
-        Err(_) => {
-            warn!("[WARN] Connection to dock timed out (3s)");
-            test_results.push(("Network", "WARN", "Timeout".to_string()));
-        }
+    } else {
+        warn!("[WARN] UART device {} not found", config.dock_uart.port);
+        warn!("  Ensure rover is physically docked via 9-pin connector");
+        warn!("  Or check udev rules if using a symlink like /dev/ttyAMA0");
+        test_results.push(("UART", "WARN", format!("Device {} not found", config.dock_uart.port)));
     }
 
     // Summary

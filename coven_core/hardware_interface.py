@@ -1,6 +1,20 @@
 """
 hardware_interface.py — Hardware Abstraction Layer for COVEN
 
+!!! DEPRECATED !!!
+This file is deprecated and no longer used. Rovers now run Rust firmware
+(see lightweight_rover_rs/) instead of Python/ROS2. This file is kept for
+reference only and will be removed in a future cleanup.
+
+The Rust implementation has its own hardware abstraction:
+- lightweight_rover_rs/src/hardware/motors.rs
+- lightweight_rover_rs/src/hardware/encoders.rs
+- lightweight_rover_rs/src/hardware/battery.rs
+
+See: lightweight_rover_rs/src/hardware/ for the active hardware drivers.
+!!! DEPRECATED !!!
+
+Original description:
 Defines abstract interfaces for hardware operations, allowing the same
 codebase to work with both simulated and physical hardware.
 

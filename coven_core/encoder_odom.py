@@ -2,6 +2,20 @@
 """
 encoder_odom.py - Wheel Encoder Odometry Publisher
 
+!!! DEPRECATED !!!
+This file is deprecated and no longer used. Rovers now run Rust firmware
+(see lightweight_rover_rs/) instead of Python/ROS2. This file is kept for
+reference only and will be removed in a future cleanup.
+
+The Rust implementation has integrated encoder odometry:
+- lightweight_rover_rs/src/hardware/encoders.rs (quadrature decoding)
+- Odometry calculated internally, uploaded to dock as raw ticks
+- Dock reconstructs odometry during offline SLAM processing
+
+See: lightweight_rover_rs/src/hardware/encoders.rs for the active encoder driver.
+!!! DEPRECATED !!!
+
+Original description:
 Reads quadrature encoders from differential drive robot and publishes
 nav_msgs/Odometry messages plus odom->base_link TF transform.
 

@@ -1,6 +1,21 @@
 """
 simplified_module_node.py - Dock-Centric Rover Node
 
+!!! DEPRECATED !!!
+This file is deprecated and no longer used. Rovers now run Rust firmware
+(see lightweight_rover_rs/) instead of Python/ROS2. This file is kept for
+reference only and will be removed in a future cleanup.
+
+The Rust implementation provides:
+- Lower memory footprint (no ROS2 runtime)
+- Better real-time performance
+- Direct hardware access via rppal
+- UART communication with dock (no WiFi/TCP)
+
+See: lightweight_rover_rs/src/state.rs for the active rover state machine.
+!!! DEPRECATED !!!
+
+Original description:
 A lightweight rover node for the dock-centric architecture. This replaces
 the heavy module_node.py which ran SLAM, Nav2, and exploration locally.
 

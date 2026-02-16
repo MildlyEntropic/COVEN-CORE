@@ -2,6 +2,20 @@
 """
 motor_driver.py - Differential Drive Motor Controller
 
+!!! DEPRECATED !!!
+This file is deprecated and no longer used. Rovers now run Rust firmware
+(see lightweight_rover_rs/) instead of Python/ROS2. This file is kept for
+reference only and will be removed in a future cleanup.
+
+The Rust implementation provides better motor control:
+- lightweight_rover_rs/src/hardware/motors.rs (TB6612FNG via rppal)
+- Hardware PWM with proper frequency control
+- Integrated with state machine for safety stops
+
+See: lightweight_rover_rs/src/hardware/motors.rs for the active driver.
+!!! DEPRECATED !!!
+
+Original description:
 Subscribes to /cmd_vel (Twist) and outputs PWM signals to TB6612FNG motor driver.
 
 Hardware: TB6612FNG dual H-bridge connected to Raspberry Pi GPIO

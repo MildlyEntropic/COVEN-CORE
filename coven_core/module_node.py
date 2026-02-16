@@ -1,6 +1,21 @@
 """
 module_node.py — COVEN Phase 1
 
+!!! DEPRECATED !!!
+This file is deprecated and no longer used. Rovers now run Rust firmware
+(see lightweight_rover_rs/) instead of Python/ROS2. This file is kept for
+reference only and will be removed in a future cleanup.
+
+The Rust implementation provides:
+- Lower memory footprint (no ROS2 runtime)
+- Better real-time performance
+- Direct hardware access via rppal
+- UART communication with dock (no WiFi/TCP)
+
+See: lightweight_rover_rs/src/state.rs for the active rover state machine.
+!!! DEPRECATED !!!
+
+Original description:
 ROS2 node representing a single COVEN-compliant module (e.g., ReconRover).
 Implements the module side of the plug-level FSM lifecycle:
 

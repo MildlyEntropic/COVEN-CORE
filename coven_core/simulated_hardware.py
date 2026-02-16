@@ -1,6 +1,19 @@
 """
 simulated_hardware.py — Simulated Hardware Implementation for COVEN
 
+!!! DEPRECATED !!!
+This file is deprecated and no longer used. Rovers now run Rust firmware
+(see lightweight_rover_rs/) instead of Python/ROS2. This file is kept for
+reference only and will be removed in a future cleanup.
+
+For simulation/testing, the Rust firmware has:
+- lightweight_rover_rs/src/mock.rs (mock hardware for testing)
+- Run with: coven-rover --mock
+
+See: lightweight_rover_rs/src/mock.rs for the active mock implementation.
+!!! DEPRECATED !!!
+
+Original description:
 Provides simulated hardware operations for Gazebo and testing environments.
 
 Author: Alexander Shultis
