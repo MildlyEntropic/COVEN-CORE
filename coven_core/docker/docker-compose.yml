@@ -1,0 +1,49 @@
+# COVEN-CORE Docker Compose Configuration
+# Supports both X11 and Wayland for GUI applications (RViz)
+
+services:
+  coven:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: coven-ros2-jazzy
+    container_name: coven-dev
+
+    stdin_open: true
+    tty: true
+
+    # Network mode for ROS2 DDS communication
+    network_mode: host
+
+    environment:
+      - DISPLAY=${DISPLAY}
+      - WAYLAND_DISPLAY=${WAYLAND_DISPLAY}
+      - XDG_RUNTIME_DIR=/tmp/runtime-root
+      - QT_QPA_PLATFORM=xcb
+      - ROS_DOMAIN_ID=0
+
+    volumes:
+      # Mount coven_core/ package root (one level up from docker/)
+      - ../:/ros2_ws/src/coven_core:rw
+
+      # X11 socket for GUI
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+
+      # Wayland socket for GUI (if using Wayland)
+      - ${XDG_RUNTIME_DIR}/${WAYLAND_DISPLAY}:/tmp/runtime-root/${WAYLAND_DISPLAY}:rw
+
+      # GPU access for hardware acceleration
+      - /dev/dri:/dev/dri:rw
+
+      # Persist colcon build artifacts
+      - coven-build:/ros2_ws/build
+      - coven-install:/ros2_ws/install
+      - coven-log:/ros2_ws/log
+
+    privileged: true
+    ipc: host
+
+volumes:
+  coven-build:
+  coven-install:
+  coven-log:

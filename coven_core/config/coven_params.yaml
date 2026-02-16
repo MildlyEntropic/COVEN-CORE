@@ -1,0 +1,49 @@
+# COVEN ROS2 Parameters
+# Configuration for dock nodes (Python/ROS2 on Raspberry Pi 4)
+#
+# Rovers run Rust firmware (rover/) and communicate
+# with the dock ONLY via UART over the 9-pin COVEN Type-A connector.
+#
+# Usage:
+#   ros2 launch coven_core coven_dock_hardware.launch.py
+
+# Wildcard parameters (apply to all nodes)
+/**:
+  ros__parameters:
+    use_sim_time: false
+
+# Dock Node Parameters
+coven_dock:
+  ros__parameters:
+    # Dock Identity
+    # dock_name: ''              # Empty = auto-generate coven name (The_Graeae, The_Weird_Sisters, etc.)
+
+    # UART Discovery Protocol (while physically docked)
+    identify_period: 5.0         # seconds between IDENTIFY_REQ over UART
+
+    # Heartbeat Monitoring (while physically docked via 9-pin connector)
+    heartbeat_timeout: 1.0       # seconds - expected heartbeat period
+    heartbeat_jitter: 0.15       # seconds - tolerance for UART jitter
+    max_heartbeat_misses: 3      # consecutive misses before fault
+
+    # Task Bidding System
+    bid_deadline: 2.0            # seconds - time to wait for bids before selecting winner
+
+    # Data Storage
+    data_storage_dir: '~/Desktop/COVEN/Data'  # received sensor data storage
+
+    # Power Management
+    boot_voltage: 5              # volts - initial boot power
+    field_ops_voltage: 12        # volts - full operation power
+
+    # Module Management
+    max_modules: 100             # maximum simultaneous modules
+
+# Frontier Dispatcher Parameters
+frontier_dispatcher:
+  ros__parameters:
+    min_frontier_size: 10        # minimum cells to consider as frontier
+    frontier_search_radius: 5.0  # meters
+    coverage_goal: 0.8           # 80% coverage target
+    dispatch_cooldown: 5.0       # seconds between dispatches
+    max_concurrent_missions: 2   # rovers exploring at once
