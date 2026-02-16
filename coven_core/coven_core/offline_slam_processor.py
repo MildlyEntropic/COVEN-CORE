@@ -21,8 +21,7 @@ import os
 import json
 import shutil
 import time
-from datetime import datetime
-from typing import Optional, List
+from typing import Optional
 from dataclasses import dataclass
 from collections import deque
 
@@ -34,7 +33,6 @@ from sensor_msgs.msg import LaserScan
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import Quaternion, TransformStamped
 from std_msgs.msg import String
-from builtin_interfaces.msg import Time as TimeMsg
 
 from tf2_ros import TransformBroadcaster
 import math
@@ -390,7 +388,7 @@ class OfflineSLAMProcessor(Node):
                 ['ros2', 'run', 'nav2_map_server', 'map_saver_cli',
                  '-f', current_map_path,
                  '-t', 'map',
-                 '--ros-args', '-p', 'use_sim_time:=true'],
+                 '--ros-args', '-p', 'use_sim_time:=false'],
                 capture_output=True,
                 text=True,
                 timeout=30

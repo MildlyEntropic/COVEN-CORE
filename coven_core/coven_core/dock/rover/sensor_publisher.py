@@ -16,7 +16,6 @@ import logging
 import math
 from typing import Optional, Callable
 
-import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 

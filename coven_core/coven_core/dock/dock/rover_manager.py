@@ -10,10 +10,9 @@ Date: December 2025
 
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Dict, Optional, List, Callable
 
-import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 
@@ -21,8 +20,7 @@ from std_msgs.msg import String
 
 from coven_core.common import (
     SimplifiedModuleState,
-    RoverRegistration, RoverRegistrationAck,
-    RoverStatus, DockCommand,
+    RoverRegistrationAck, DockCommand,
     rover_registration_decode, rover_registration_ack_encode,
     rover_status_decode, dock_command_encode,
 )

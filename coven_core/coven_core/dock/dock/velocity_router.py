@@ -13,7 +13,6 @@ import logging
 import time
 from typing import Dict, Optional
 
-import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 

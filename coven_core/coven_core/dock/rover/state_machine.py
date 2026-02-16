@@ -22,8 +22,8 @@ Date: December 2025
 
 import logging
 from enum import Enum, auto
-from typing import Callable, Optional, Set, Dict
-from dataclasses import dataclass, field
+from typing import Callable, Set, Dict
+from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 

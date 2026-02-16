@@ -18,10 +18,9 @@ Date: December 2025
 
 import json
 import logging
-import math
 import time
-from dataclasses import dataclass, field
-from typing import Optional, Protocol, List, Dict, Any
+from dataclasses import dataclass
+from typing import Optional, Protocol, Dict
 
 from coven_core.config import get_config, BiddingConfig
 

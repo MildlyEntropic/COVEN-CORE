@@ -19,8 +19,10 @@
   <depend>nav_msgs</depend>
   <depend>sensor_msgs</depend>
 
-  <!-- SLAM and mapping (dock-side only) -->
+  <!-- SLAM, mapping, and navigation (dock-side only) -->
   <exec_depend>slam_toolbox</exec_depend>
+  <exec_depend>nav2_map_server</exec_depend>
+  <exec_depend>nav2_simple_commander</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
   <exec_depend>tf2_geometry_msgs</exec_depend>
 

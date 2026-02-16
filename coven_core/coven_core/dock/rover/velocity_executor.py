@@ -13,16 +13,13 @@ Date: December 2025
 
 import logging
 import time
-from typing import Optional
-
-import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 
 from geometry_msgs.msg import Twist
 from std_msgs.msg import String
 
-from coven_core.common import VelocityCommand, velocity_command_decode
+from coven_core.common import velocity_command_decode
 
 logger = logging.getLogger(__name__)
 

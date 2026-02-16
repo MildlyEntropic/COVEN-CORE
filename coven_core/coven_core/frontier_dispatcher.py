@@ -11,6 +11,8 @@ Centralized exploration coordinator for the COVEN dock. This node:
 Rovers collect sensor data and return it to the dock. All SLAM processing
 and exploration planning occurs here where power and cooling are available.
 
+Pure analysis lives in frontier_analysis.py; data types in dispatch_tracker.py.
+
 Author: Alexander Shultis
 Date: December 2025
 """
@@ -18,9 +20,7 @@ Date: December 2025
 import json
 import math
 import numpy as np
-from typing import List, Tuple, Optional, Dict
-from enum import Enum
-from dataclasses import dataclass
+from typing import List, Optional, Dict
 
 import rclpy
 from rclpy.node import Node
@@ -28,38 +28,9 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPo
 
 from nav_msgs.msg import OccupancyGrid
 from std_msgs.msg import String
-from geometry_msgs.msg import Point
 
-
-class RoverStatus(Enum):
-    """Rover availability states."""
-    IDLE = "idle"           # At dock, ready for mission
-    DEPLOYED = "deployed"   # Out on mission
-    RETURNING = "returning" # Coming back
-    DOCKED = "docked"       # Just returned, transferring data
-
-
-@dataclass
-class Frontier:
-    """An unexplored frontier region."""
-    centroid: Tuple[float, float]  # World coordinates
-    size: int                       # Number of frontier cells
-    distance: float                 # Distance from dock
-    direction: float                # Angle from dock (radians)
-    score: float = 0.0              # Exploration priority
-
-
-@dataclass
-class RoverInfo:
-    """Tracked information about a rover."""
-    module_id: str
-    status: RoverStatus
-    last_position: Tuple[float, float]
-    current_mission: Optional[str] = None
-    missions_completed: int = 0
-    registered_time: float = 0.0  # When the rover first registered
-    dispatch_time: float = 0.0    # When last dispatched (to detect race conditions)
-    previous_status: Optional[RoverStatus] = None  # Track state transitions
+from coven_core.frontier_analysis import Frontier, analyze_frontiers
+from coven_core.dispatch_tracker import RoverStatus, RoverInfo
 
 
 class FrontierDispatcher(Node):
@@ -201,22 +172,15 @@ class FrontierDispatcher(Node):
                 previous_status=status
             )
             self.get_logger().info(f'[Dispatcher] Rover registered: {module_id}')
-            # Show all registered rovers
             all_rovers = list(self.rovers.keys())
             self.get_logger().info(f'[Dispatcher] All registered rovers ({len(all_rovers)}): {all_rovers}')
         else:
-            # Store previous status before updating
             prev_status = self.rovers[module_id].status
             self.rovers[module_id].previous_status = prev_status
             self.rovers[module_id].status = status
             self.rovers[module_id].last_position = pos
 
         # Check if rover just completed a mission
-        # Only count as complete if:
-        # 1. Current status is IDLE
-        # 2. Previous status was NOT IDLE (actual transition happened)
-        # 3. Rover has a current mission assigned
-        # 4. Enough time has passed since dispatch (guard against timing glitches)
         prev = self.rovers[module_id].previous_status
         time_since_dispatch = now - self.rovers[module_id].dispatch_time
         transitioned_to_idle = (status == RoverStatus.IDLE and prev is not None and prev != RoverStatus.IDLE)
@@ -227,7 +191,6 @@ class FrontierDispatcher(Node):
             self.rovers[module_id].current_mission = None
 
             if self.exploration_complete:
-                # Rover returned after exploration was marked complete
                 deployed_count = sum(1 for r in self.rovers.values() if r.status == RoverStatus.DEPLOYED)
                 self.get_logger().info(
                     f'[Dispatcher] Rover {module_id} returned (mission {mission}). '
@@ -255,9 +218,8 @@ class FrontierDispatcher(Node):
     def _map_callback(self, msg: OccupancyGrid):
         """Receive updated map from SLAM."""
         self.current_map = msg
-        # Update coverage stats whenever we get a map
         self._update_coverage()
-        self._analyze_frontiers()
+        self._refresh_frontiers()
 
     def _update_coverage(self):
         """Calculate and update current map coverage."""
@@ -269,6 +231,31 @@ class FrontierDispatcher(Node):
         known = np.sum((grid == 0) | (grid == 100))  # Free or occupied
         self.current_coverage = known / total if total > 0 else 0
 
+    def _refresh_frontiers(self):
+        """Re-analyze frontiers from the current map."""
+        if self.current_map is None:
+            return
+
+        self.frontiers = analyze_frontiers(
+            grid_data=np.array(self.current_map.data),
+            width=self.current_map.info.width,
+            height=self.current_map.info.height,
+            resolution=self.current_map.info.resolution,
+            origin_x=self.current_map.info.origin.position.x,
+            origin_y=self.current_map.info.origin.position.y,
+            dock_pos=self.dock_pos,
+            explored_directions=self.explored_directions,
+            min_frontier_size=self.min_frontier_size,
+        )
+
+        if not self.frontiers:
+            self.get_logger().info('[Dispatcher] No frontiers found - exploration may be complete')
+            self._check_exploration_complete()
+        else:
+            self.get_logger().info(
+                f'[Dispatcher] Found {len(self.frontiers)} frontier regions'
+            )
+
     def _slam_status_callback(self, msg: String):
         """React to SLAM processor completing a map update."""
         try:
@@ -279,8 +266,6 @@ class FrontierDispatcher(Node):
         if data.get('status') == 'complete':
             self.get_logger().info('[Dispatcher] SLAM update complete, analyzing frontiers...')
             # Give time for map to be published AND rover to transition to IDLE
-            # Rover takes ~2s after transfer to go IDLE, so wait 4s to be safe
-            # Dispatch ALL idle rovers, not just one
             self.create_timer(4.0, self._dispatch_all_idle_rovers)
 
     def _auctioneer_status_callback(self, msg: String):
@@ -290,11 +275,9 @@ class FrontierDispatcher(Node):
         except json.JSONDecodeError:
             return
 
-        # Update rover registry based on auctioneer's view
         rovers_data = data.get('rovers', {})
         for module_id, rover_info in rovers_data.items():
             if module_id not in self.rovers:
-                # New rover discovered via auctioneer
                 self.rovers[module_id] = RoverInfo(
                     module_id=module_id,
                     status=RoverStatus.IDLE,
@@ -302,7 +285,6 @@ class FrontierDispatcher(Node):
                     registered_time=self.get_clock().now().nanoseconds / 1e9
                 )
             else:
-                # Update existing rover's position
                 self.rovers[module_id].last_position = (
                     rover_info.get('x', 0.0),
                     rover_info.get('y', 0.0)
@@ -313,18 +295,15 @@ class FrontierDispatcher(Node):
         if self.initial_dispatched:
             return
 
-        # Check if we have any idle rovers that have been registered for at least 5 seconds
-        # This ensures the rover is fully initialized before we send it out
         now = self.get_clock().now().nanoseconds / 1e9
         idle_rovers = [
             r for r in self.rovers.values()
             if r.status == RoverStatus.IDLE and (now - r.registered_time) >= 5.0
         ]
         if not idle_rovers:
-            return  # Wait for rovers to be ready
+            return
 
         if self.current_map is None and self.auto_dispatch:
-            # No map yet - send all idle rovers in different directions to start exploring
             directions = [0.0, math.pi, math.pi/2, -math.pi/2, math.pi/4, -math.pi/4, 3*math.pi/4, -3*math.pi/4]
             self.get_logger().info(f'[Dispatcher] No map yet, sending {len(idle_rovers)} rover(s) to explore')
             for i, rover in enumerate(idle_rovers):
@@ -335,31 +314,14 @@ class FrontierDispatcher(Node):
             self.initial_dispatched = True
 
     def _periodic_dispatch_check(self):
-        """Periodically check for idle rovers and dispatch them.
-
-        This catches cases where:
-        - SLAM completion timing doesn't align with rover becoming idle
-        - Multiple rovers return around the same time
-        - Any other timing edge cases
-
-        Dispatches ALL idle rovers to available frontiers for parallel exploration.
-        """
-        if self.exploration_complete:
+        """Periodically check for idle rovers and dispatch them."""
+        if self.exploration_complete or not self.auto_dispatch or not self.initial_dispatched:
             return
 
-        if not self.auto_dispatch:
-            return
-
-        if not self.initial_dispatched:
-            return  # Wait for initial dispatch first
-
-        # Find idle rovers that aren't currently being dispatched
         idle_rovers = [r for r in self.rovers.values() if r.status == RoverStatus.IDLE]
-
         if not idle_rovers:
             return
 
-        # If we have frontiers, dispatch ALL idle rovers
         if self.frontiers:
             self.get_logger().info(
                 f'[Dispatcher] Periodic check: {len(idle_rovers)} idle rover(s), '
@@ -367,139 +329,9 @@ class FrontierDispatcher(Node):
             )
             self._dispatch_all_idle_rovers()
         elif self.current_map is not None:
-            # We have a map but no frontiers - re-analyze (silently)
-            self._analyze_frontiers()
+            self._refresh_frontiers()
             if self.frontiers:
                 self._dispatch_all_idle_rovers()
-            # Don't log "no frontiers" on periodic checks - too spammy
-
-    def _analyze_frontiers(self):
-        """Find frontier regions in the current map."""
-        if self.current_map is None:
-            return
-
-        self.frontiers = []
-
-        grid = np.array(self.current_map.data).reshape(
-            (self.current_map.info.height, self.current_map.info.width)
-        )
-        resolution = self.current_map.info.resolution
-        origin_x = self.current_map.info.origin.position.x
-        origin_y = self.current_map.info.origin.position.y
-
-        # Find frontier cells (free cells adjacent to unknown)
-        # -1 = unknown, 0 = free, 100 = occupied
-        frontier_cells = []
-
-        for y in range(1, grid.shape[0] - 1):
-            for x in range(1, grid.shape[1] - 1):
-                if grid[y, x] == 0:  # Free cell
-                    # Check if adjacent to unknown
-                    neighbors = [
-                        grid[y-1, x], grid[y+1, x],
-                        grid[y, x-1], grid[y, x+1]
-                    ]
-                    if -1 in neighbors:
-                        # This is a frontier cell
-                        world_x = origin_x + x * resolution
-                        world_y = origin_y + y * resolution
-                        frontier_cells.append((world_x, world_y))
-
-        if not frontier_cells:
-            self.get_logger().info('[Dispatcher] No frontiers found - exploration may be complete')
-            self._check_exploration_complete()
-            return
-
-        # Cluster frontier cells into regions
-        clusters = self._cluster_frontiers(frontier_cells)
-
-        for cluster in clusters:
-            if len(cluster) < self.min_frontier_size:
-                continue
-
-            # Calculate centroid
-            cx = sum(p[0] for p in cluster) / len(cluster)
-            cy = sum(p[1] for p in cluster) / len(cluster)
-
-            # Distance and direction from dock
-            dx = cx - self.dock_pos[0]
-            dy = cy - self.dock_pos[1]
-            distance = math.sqrt(dx*dx + dy*dy)
-            direction = math.atan2(dy, dx)
-
-            # Score: prefer larger frontiers, reasonable distance, new directions
-            direction_novelty = self._direction_novelty(direction)
-            score = len(cluster) * direction_novelty / (1.0 + distance * 0.1)
-
-            frontier = Frontier(
-                centroid=(cx, cy),
-                size=len(cluster),
-                distance=distance,
-                direction=direction,
-                score=score
-            )
-            self.frontiers.append(frontier)
-
-        # Sort by score
-        self.frontiers.sort(key=lambda f: f.score, reverse=True)
-
-        self.get_logger().info(
-            f'[Dispatcher] Found {len(self.frontiers)} frontier regions'
-        )
-
-    def _cluster_frontiers(self, cells: List[Tuple[float, float]],
-                          threshold: float = 0.5) -> List[List[Tuple[float, float]]]:
-        """Simple clustering of frontier cells by proximity."""
-        if not cells:
-            return []
-
-        clusters = []
-        used = [False] * len(cells)
-
-        for i, cell in enumerate(cells):
-            if used[i]:
-                continue
-
-            # Start new cluster
-            cluster = [cell]
-            used[i] = True
-
-            # Find all cells within threshold
-            for j, other in enumerate(cells):
-                if used[j]:
-                    continue
-                dx = cell[0] - other[0]
-                dy = cell[1] - other[1]
-                if math.sqrt(dx*dx + dy*dy) < threshold:
-                    cluster.append(other)
-                    used[j] = True
-
-            clusters.append(cluster)
-
-        return clusters
-
-    def _direction_novelty(self, direction: float) -> float:
-        """Score how novel a direction is (prefer unexplored directions)."""
-        if not self.explored_directions:
-            return 1.0
-
-        # Find minimum angular distance to any explored direction
-        min_diff = float('inf')
-        for explored in self.explored_directions:
-            diff = abs(self._normalize_angle(direction - explored))
-            min_diff = min(min_diff, diff)
-
-        # Normalize: pi = completely new, 0 = same direction
-        novelty = min_diff / math.pi
-        return 0.5 + 0.5 * novelty  # Range: 0.5 to 1.0
-
-    def _normalize_angle(self, angle: float) -> float:
-        """Normalize angle to [-pi, pi]."""
-        while angle > math.pi:
-            angle -= 2 * math.pi
-        while angle < -math.pi:
-            angle += 2 * math.pi
-        return angle
 
     def _dispatch_next_rover(self):
         """Send the next available rover to the best frontier.
@@ -514,13 +346,9 @@ class FrontierDispatcher(Node):
         Args:
             max_dispatches: Maximum rovers to dispatch (0 = unlimited)
         """
-        if self.exploration_complete:
+        if self.exploration_complete or not self.auto_dispatch:
             return
 
-        if not self.auto_dispatch:
-            return
-
-        # Find idle rovers
         idle_rovers = [r for r in self.rovers.values() if r.status == RoverStatus.IDLE]
         if not idle_rovers:
             self.get_logger().info('[Dispatcher] No idle rovers available')
@@ -528,28 +356,21 @@ class FrontierDispatcher(Node):
 
         # Refresh frontier analysis to get current state
         if self.current_map is not None:
-            self._analyze_frontiers()
+            self._refresh_frontiers()
 
-        # Get available frontiers
         if not self.frontiers:
             self.get_logger().info('[Dispatcher] No frontiers to explore')
             return
 
-        # Show bidding info - which rovers are available
+        # Show bidding info
         rover_summary = []
         for r in self.rovers.values():
             status_icon = '✓' if r.status == RoverStatus.IDLE else '→' if r.status == RoverStatus.DEPLOYED else '?'
             rover_summary.append(f'{r.module_id}[{status_icon}]')
 
-        self.get_logger().info(
-            '[Dispatcher] ─── Parallel Dispatch ───'
-        )
-        self.get_logger().info(
-            f'[Dispatcher] Rovers: {", ".join(rover_summary)}'
-        )
-        self.get_logger().info(
-            f'[Dispatcher] Idle: {len(idle_rovers)}, Frontiers: {len(self.frontiers)}'
-        )
+        self.get_logger().info('[Dispatcher] ─── Parallel Dispatch ───')
+        self.get_logger().info(f'[Dispatcher] Rovers: {", ".join(rover_summary)}')
+        self.get_logger().info(f'[Dispatcher] Idle: {len(idle_rovers)}, Frontiers: {len(self.frontiers)}')
 
         # Dispatch each idle rover to a different frontier
         dispatched = 0
@@ -559,8 +380,6 @@ class FrontierDispatcher(Node):
             if max_dispatches > 0 and dispatched >= max_dispatches:
                 break
             if frontier_idx >= len(self.frontiers):
-                # No more frontiers - could send to same frontier with offset
-                # For now, just stop dispatching
                 self.get_logger().info(
                     f'[Dispatcher] Ran out of frontiers ({len(self.frontiers)}) '
                     f'for {len(idle_rovers) - dispatched} remaining rovers'
@@ -581,13 +400,11 @@ class FrontierDispatcher(Node):
             frontier_idx += 1
 
         if dispatched > 0:
-            self.get_logger().info(
-                f'[Dispatcher] ─── Dispatched {dispatched} rover(s) ───'
-            )
+            self.get_logger().info(f'[Dispatcher] ─── Dispatched {dispatched} rover(s) ───')
 
     def _dispatch_rover(self, module_id: str,
-                       target: Optional[Tuple[float, float]] = None,
-                       direction: Optional[float] = None):
+                       target=None,
+                       direction=None):
         """Send a rover on an exploration mission."""
         self.mission_counter += 1
         mission_id = f'frontier_{self.mission_counter:03d}'
@@ -608,7 +425,6 @@ class FrontierDispatcher(Node):
             self.explored_directions.append(direction)
 
         # Build mission request for auctioneer
-        # Format: JSON with task_type, waypoints, priority
         mission_request = {
             "task_type": "explore",
             "waypoints": [{"x": target[0], "y": target[1]}],
@@ -620,10 +436,6 @@ class FrontierDispatcher(Node):
         self.mission_pub.publish(msg)
 
         # Track dispatch time for race condition detection
-        # NOTE: Don't set rover status to DEPLOYED here - let rover_status_callback
-        # update it when we get confirmation from auctioneer/rover that the mission
-        # was actually assigned. Setting it here causes state inconsistency if
-        # the auction fails or mission gets assigned to a different rover.
         if module_id in self.rovers:
             self.rovers[module_id].current_mission = mission_id
             self.rovers[module_id].dispatch_time = self.get_clock().now().nanoseconds / 1e9
@@ -637,7 +449,6 @@ class FrontierDispatcher(Node):
         if self.current_map is None:
             return
 
-        # Coverage already updated by _update_coverage()
         self.get_logger().info(f'[Dispatcher] Map coverage: {self.current_coverage*100:.1f}%')
 
         if self.current_coverage >= self.coverage_goal and not self.exploration_complete:
