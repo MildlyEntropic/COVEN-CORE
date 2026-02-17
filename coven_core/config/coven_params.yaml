@@ -30,20 +30,14 @@ coven_dock:
     bid_deadline: 2.0            # seconds - time to wait for bids before selecting winner
 
     # Data Storage
-    data_storage_dir: '~/Desktop/COVEN/Data'  # received sensor data storage
+    map_storage_dir: '~/coven_maps'  # saved map data from completed missions
 
-    # Power Management
-    boot_voltage: 5              # volts - initial boot power
-    field_ops_voltage: 12        # volts - full operation power
-
-    # Module Management
-    max_modules: 100             # maximum simultaneous modules
+    # Recharge
+    recharge_delay: 30.0         # seconds - wait for battery recharge before re-dispatch
 
 # Frontier Dispatcher Parameters
 frontier_dispatcher:
   ros__parameters:
     min_frontier_size: 10        # minimum cells to consider as frontier
-    frontier_search_radius: 5.0  # meters
+    exploration_radius: 5.0      # meters — how far to send rovers
     coverage_goal: 0.8           # 80% coverage target
-    dispatch_cooldown: 5.0       # seconds between dispatches
-    max_concurrent_missions: 2   # rovers exploring at once

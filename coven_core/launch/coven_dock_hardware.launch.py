@@ -78,16 +78,12 @@ def generate_launch_description():
         output='screen',
         parameters=[{
             'use_sim_time': False,
-            'dock_x': dock_x,
-            'dock_y': dock_y,
-            'dock_name': coven_name,
+            'dock_position_x': dock_x,
+            'dock_position_y': dock_y,
             # Frontier detection parameters
             'min_frontier_size': 10,          # Minimum cells to consider frontier
-            'frontier_search_radius': 5.0,    # meters
+            'exploration_radius': 5.0,        # meters — how far to send rovers
             'coverage_goal': 0.8,             # 80% coverage target
-            # Dispatch parameters
-            'dispatch_cooldown': 5.0,         # seconds between dispatches
-            'max_concurrent_missions': 2,     # How many rovers exploring at once
         }],
     )
 
@@ -104,9 +100,9 @@ def generate_launch_description():
         output='screen',
         parameters=[{
             'use_sim_time': False,
-            'data_watch_dir': data_dir,
+            'data_dir': data_dir,
             # Replay parameters
-            'replay_speed': 10.0,             # Replay at 10x real-time
+            'playback_speed': 10.0,           # Replay at 10x real-time
             'scan_topic': '/offline_scan',    # Topic for replayed scans
             'odom_topic': '/offline_odom',    # Topic for replayed odom
         }],
