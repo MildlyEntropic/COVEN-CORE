@@ -541,6 +541,11 @@ impl WaypointFollower {
         (self.current_idx, self.waypoints.len())
     }
 
+    /// Check if actively navigating toward a goal.
+    pub fn has_goal(&self) -> bool {
+        self.state == NavState::Navigating
+    }
+
     /// Clear all waypoints and stop.
     pub fn clear(&mut self) {
         self.waypoints.clear();

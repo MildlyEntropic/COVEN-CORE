@@ -578,16 +578,18 @@ async fn run_real_mode(config: RoverConfig, dock: DockUart) -> Result<()> {
 /// without the physical UART hardware - this is mainly for testing logic.
 async fn run_mock_mode(config: RoverConfig, mut dock: DockUart) -> Result<()> {
     use crate::mock::MockHardware;
-    use crate::navigation::{NavState, WaypointFollower};
+    use crate::navigation::{NavParams, NavState, WaypointFollower};
     use crate::protocol::{
         DockMessage, OdomDataCompact, RawSensorSample, RoverMessage, RoverState, ScanDataCompact,
         SensorBatch, SENSOR_TYPE_LIDAR, encode_lidar_config, encode_lidar_ranges,
     };
+    use crate::subsumption::{LayerContext, SubsumptionArbiter};
     use std::time::{Duration, Instant};
     use tokio::signal;
 
     let mut hardware = MockHardware::new();
     let mut navigator = WaypointFollower::new();
+    let mut arbiter = SubsumptionArbiter::new(NavParams::from(&config.navigation));
     info!("Mock hardware initialized");
     info!("Press Ctrl+C to shutdown gracefully");
 
@@ -613,6 +615,8 @@ async fn run_mock_mode(config: RoverConfig, mut dock: DockUart) -> Result<()> {
 
     // Mission data (for batch upload on completion)
     let mut current_mission: Option<(String, SensorBatch)> = None;
+    let mut mission_dock_x = 0.0_f64;
+    let mut mission_dock_y = 0.0_f64;
 
     // Timing
     let loop_period = Duration::from_secs_f64(1.0 / config.timing.control_rate);
@@ -747,6 +751,8 @@ async fn run_mock_mode(config: RoverConfig, mut dock: DockUart) -> Result<()> {
                     let wp_coords: Vec<(f64, f64)> = waypoints.iter().map(|w| (w.x, w.y)).collect();
                     navigator.set_waypoints(wp_coords);
                     navigator.set_dock_position(dock_x, dock_y);
+                    mission_dock_x = dock_x;
+                    mission_dock_y = dock_y;
 
                     // Create sensor batch for raw data
                     let batch = SensorBatch::new(
@@ -825,89 +831,117 @@ async fn run_mock_mode(config: RoverConfig, mut dock: DockUart) -> Result<()> {
                     last_sample = Instant::now();
                 }
 
-                // Run Lyapunov navigation
-                if let Some(ref s) = scan {
-                    let cmd = navigator.update(
-                        odom.x,
-                        odom.y,
-                        odom.theta,
-                        &s.ranges,
-                        s.angle_min,
-                        s.angle_increment,
-                    );
+                // === SUBSUMPTION NAVIGATION ===
 
-                    hardware.set_velocity(cmd.linear, cmd.angular);
-                    last_cmd_vel = Instant::now();
+                // Pre-compute navigation velocity from WaypointFollower
+                let nav_cmd = scan.as_ref().map(|s| {
+                    navigator.update(
+                        odom.x, odom.y, odom.theta,
+                        &s.ranges, s.angle_min, s.angle_increment,
+                    )
+                });
+                let has_goal = navigator.has_goal();
 
-                    // Check navigation state
-                    match navigator.state() {
-                        NavState::Arrived => {
-                            let my_id = module_id(&assigned_name);
-                            info!("{} navigation complete - mission successful", my_id);
-                            // Complete mission and upload batch
-                            if let Some((task_id, batch)) = current_mission.take() {
-                                let now = std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .unwrap_or_default()
-                                    .as_secs_f64();
-                                let duration = now - batch.mission_start;
+                // Build subsumption layer context
+                let min_range = scan.as_ref()
+                    .map(|s| s.ranges.iter()
+                        .filter(|r| r.is_finite() && **r > 0.0)
+                        .cloned()
+                        .fold(f64::INFINITY, f64::min))
+                    .unwrap_or(f64::INFINITY);
 
-                                // Upload batch
-                                let batch_msg = RoverMessage::DataBatch {
-                                    module_id: my_id.clone(),
-                                    mission_id: task_id.clone(),
-                                    batch,
-                                };
-                                dock.send(batch_msg).await?;
+                let ctx = LayerContext {
+                    robot_x: odom.x,
+                    robot_y: odom.y,
+                    robot_theta: odom.theta,
+                    lidar_ranges: scan.as_ref()
+                        .map(|s| s.ranges.clone())
+                        .unwrap_or_default(),
+                    min_range,
+                    lidar_angle_min: scan.as_ref()
+                        .map(|s| s.angle_min).unwrap_or(0.0),
+                    lidar_angle_increment: scan.as_ref()
+                        .map(|s| s.angle_increment).unwrap_or(0.0),
+                    d_safe: config.navigation.d_safe,
+                    battery_pct,
+                    low_battery_threshold: config.navigation.low_battery_threshold,
+                    nav_cmd,
+                    has_goal,
+                    has_mission: current_mission.is_some(),
+                    dock_x: mission_dock_x,
+                    dock_y: mission_dock_y,
+                };
 
-                                let complete = RoverMessage::TaskComplete {
-                                    module_id: my_id,
-                                    task_id,
-                                    success: true,
-                                    map_data: "".to_string(),
-                                    coverage: 0.0,
-                                    duration,
-                                };
-                                dock.send(complete).await?;
-                            }
-                            navigator.clear();
-                            hardware.stop();
-                            state = RoverState::Normal;
+                // Arbiter decides final velocity (L0–L4 cascade)
+                let cmd = arbiter.evaluate(&ctx);
+                hardware.set_velocity(cmd.linear, cmd.angular);
+                last_cmd_vel = Instant::now();
+
+                // Check navigation state
+                match navigator.state() {
+                    NavState::Arrived => {
+                        let my_id = module_id(&assigned_name);
+                        info!("{} navigation complete - mission successful", my_id);
+                        if let Some((task_id, batch)) = current_mission.take() {
+                            let now = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs_f64();
+                            let duration = now - batch.mission_start;
+
+                            let batch_msg = RoverMessage::DataBatch {
+                                module_id: my_id.clone(),
+                                mission_id: task_id.clone(),
+                                batch,
+                            };
+                            dock.send(batch_msg).await?;
+
+                            let complete = RoverMessage::TaskComplete {
+                                module_id: my_id,
+                                task_id,
+                                success: true,
+                                map_data: "".to_string(),
+                                coverage: 0.0,
+                                duration,
+                            };
+                            dock.send(complete).await?;
                         }
-                        NavState::Stuck => {
-                            let my_id = module_id(&assigned_name);
-                            info!("{} navigation stuck - aborting mission", my_id);
-                            if let Some((task_id, batch)) = current_mission.take() {
-                                let now = std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .unwrap_or_default()
-                                    .as_secs_f64();
-                                let duration = now - batch.mission_start;
-
-                                // Still upload batch (partial data)
-                                let batch_msg = RoverMessage::DataBatch {
-                                    module_id: my_id.clone(),
-                                    mission_id: task_id.clone(),
-                                    batch,
-                                };
-                                dock.send(batch_msg).await?;
-
-                                let complete = RoverMessage::TaskComplete {
-                                    module_id: my_id,
-                                    task_id,
-                                    success: false,
-                                    map_data: "".to_string(),
-                                    coverage: 0.0,
-                                    duration,
-                                };
-                                dock.send(complete).await?;
-                            }
-                            navigator.clear();
-                            hardware.stop();
-                            state = RoverState::Normal;
-                        }
-                        _ => {}
+                        navigator.clear();
+                        hardware.stop();
+                        state = RoverState::Normal;
                     }
+                    NavState::Stuck => {
+                        let my_id = module_id(&assigned_name);
+                        info!("{} navigation stuck - aborting mission", my_id);
+                        if let Some((task_id, batch)) = current_mission.take() {
+                            let now = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs_f64();
+                            let duration = now - batch.mission_start;
+
+                            let batch_msg = RoverMessage::DataBatch {
+                                module_id: my_id.clone(),
+                                mission_id: task_id.clone(),
+                                batch,
+                            };
+                            dock.send(batch_msg).await?;
+
+                            let complete = RoverMessage::TaskComplete {
+                                module_id: my_id,
+                                task_id,
+                                success: false,
+                                map_data: "".to_string(),
+                                coverage: 0.0,
+                                duration,
+                            };
+                            dock.send(complete).await?;
+                        }
+                        navigator.clear();
+                        hardware.stop();
+                        state = RoverState::Normal;
+                    }
+                    _ => {}
                 }
 
                 // Safety stop if no recent activity

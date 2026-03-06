@@ -10,8 +10,8 @@ license = "MIT"
 # GPIO and hardware
 rppal = "0.19"              # Raspberry Pi GPIO, PWM, I2C, SPI
 
-# Async runtime
-tokio = { version = "1", features = ["full"] }
+# Async runtime (only features we actually use — "full" caused OOM during compilation)
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "io-util", "signal"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -39,6 +39,10 @@ strip = true        # Strip symbols
 
 [profile.dev]
 opt-level = 1       # Some optimization even in dev (for timing)
+
+[profile.test]
+inherits = "dev"
+opt-level = 0       # Skip LLVM optimizer for tests — prevents OOM on 15GB systems
 
 # Cross-compilation targets
 # Build with: cargo build --release --target arm-unknown-linux-gnueabihf

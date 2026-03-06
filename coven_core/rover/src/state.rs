@@ -43,7 +43,8 @@ use crate::config::RoverConfig;
 use crate::dock_uart::DockUart;
 use crate::hardware::{BatteryReader, Hardware};
 use crate::lidar::LidarDriver;
-use crate::navigation::{NavState, WaypointFollower};
+use crate::navigation::{NavParams, NavState, WaypointFollower};
+use crate::subsumption::{LayerContext, SubsumptionArbiter};
 use crate::protocol::{
     DockMessage, RawSensorSample, RoverMessage, RoverState, SensorBatch,
     SENSOR_TYPE_LIDAR, encode_lidar_config, encode_lidar_ranges,
@@ -68,10 +69,8 @@ struct MissionData {
     /// Raw sensor samples collected during mission.
     batch: SensorBatch,
     /// Dock X position for return navigation.
-    #[allow(dead_code)]
     dock_x: f64,
     /// Dock Y position for return navigation.
-    #[allow(dead_code)]
     dock_y: f64,
     /// Mission start time for timeout tracking.
     start_time: Instant,
@@ -110,6 +109,8 @@ pub struct RoverStateMachine {
 
     /// Lyapunov-based waypoint navigator.
     navigator: WaypointFollower,
+    /// Subsumption behavioral arbiter (L0–L4 per thesis).
+    arbiter: SubsumptionArbiter,
 
     /// Last heartbeat send time.
     last_heartbeat: Instant,
@@ -145,6 +146,9 @@ impl RoverStateMachine {
         // Create navigator with config params
         let navigator = WaypointFollower::with_config(&config.navigation);
 
+        // Create subsumption arbiter with nav params
+        let arbiter = SubsumptionArbiter::new(NavParams::from(&config.navigation));
+
         // Try to load persisted witch name from previous session
         let persisted_name = Self::load_persisted_name();
         if let Some(ref name) = persisted_name {
@@ -162,6 +166,7 @@ impl RoverStateMachine {
             battery_pct: initial_battery,
             assigned_name: persisted_name, // Load from previous session if available
             navigator,
+            arbiter,
             last_heartbeat: Instant::now(),
             last_cmd_vel: Instant::now(),
             last_sample: Instant::now(),
@@ -350,41 +355,65 @@ impl RoverStateMachine {
                         self.last_sample = Instant::now();
                     }
 
-                    // === NAVIGATION ===
+                    // === SUBSUMPTION NAVIGATION ===
 
-                    // Run navigation if we have a scan
-                    if let Some(ref s) = scan {
-                        let cmd = self.navigator.update(
-                            odom.x,
-                            odom.y,
-                            odom.theta,
-                            &s.ranges,
-                            s.angle_min,
-                            s.angle_increment,
-                        );
+                    // Pre-compute navigation velocity from WaypointFollower
+                    let nav_cmd = scan.as_ref().map(|s| {
+                        self.navigator.update(
+                            odom.x, odom.y, odom.theta,
+                            &s.ranges, s.angle_min, s.angle_increment,
+                        )
+                    });
+                    let has_goal = self.navigator.has_goal();
 
-                        // Apply velocity command
-                        self.hardware.motors.set_velocity(cmd.linear, cmd.angular);
-                        self.last_cmd_vel = Instant::now();
+                    // Build subsumption layer context
+                    let min_range = scan.as_ref()
+                        .map(|s| s.ranges.iter()
+                            .filter(|r| r.is_finite() && **r > 0.0)
+                            .cloned()
+                            .fold(f64::INFINITY, f64::min))
+                        .unwrap_or(f64::INFINITY);
 
-                        // Check if navigation completed
-                        match self.navigator.state() {
-                            NavState::Arrived => {
-                                info!("Navigation complete - mission successful");
-                                self.complete_mission(true).await?;
-                            }
-                            NavState::Stuck => {
-                                warn!("Navigation stuck - aborting mission");
-                                self.complete_mission(false).await?;
-                            }
-                            _ => {}
+                    let ctx = LayerContext {
+                        robot_x: odom.x,
+                        robot_y: odom.y,
+                        robot_theta: odom.theta,
+                        lidar_ranges: scan.as_ref()
+                            .map(|s| s.ranges.clone())
+                            .unwrap_or_default(),
+                        min_range,
+                        lidar_angle_min: scan.as_ref()
+                            .map(|s| s.angle_min).unwrap_or(0.0),
+                        lidar_angle_increment: scan.as_ref()
+                            .map(|s| s.angle_increment).unwrap_or(0.0),
+                        d_safe: self.config.navigation.d_safe,
+                        battery_pct: self.battery_pct,
+                        low_battery_threshold: self.config.navigation.low_battery_threshold,
+                        nav_cmd,
+                        has_goal,
+                        has_mission: self.current_mission.is_some(),
+                        dock_x: self.current_mission.as_ref()
+                            .map(|m| m.dock_x).unwrap_or(0.0),
+                        dock_y: self.current_mission.as_ref()
+                            .map(|m| m.dock_y).unwrap_or(0.0),
+                    };
+
+                    // Arbiter decides final velocity (L0–L4 cascade)
+                    let cmd = self.arbiter.evaluate(&ctx);
+                    self.hardware.motors.set_velocity(cmd.linear, cmd.angular);
+                    self.last_cmd_vel = Instant::now();
+
+                    // Check if navigation completed
+                    match self.navigator.state() {
+                        NavState::Arrived => {
+                            info!("Navigation complete - mission successful");
+                            self.complete_mission(true).await?;
                         }
-                    } else {
-                        // CRITICAL SAFETY: No LiDAR data - stop immediately
-                        // Cannot navigate safely without obstacle detection
-                        warn!("No LiDAR scan available - stopping motors for safety");
-                        self.hardware.motors.stop();
-                        self.last_cmd_vel = Instant::now();
+                        NavState::Stuck => {
+                            warn!("Navigation stuck - aborting mission");
+                            self.complete_mission(false).await?;
+                        }
+                        _ => {}
                     }
 
                     // Safety stop if no recent commands
