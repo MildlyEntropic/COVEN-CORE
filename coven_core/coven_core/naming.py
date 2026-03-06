@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """
 naming.py — COVEN witch naming system.
 

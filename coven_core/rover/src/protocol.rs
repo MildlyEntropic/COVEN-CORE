@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 //! protocol.rs — COVEN Protocol Message Definitions
 //!
 //! Defines message types for dock-rover communication.
@@ -240,6 +241,14 @@ pub enum RoverMessage {
         module_id: String,
         /// Compact odometry data.
         odom: OdomDataCompact,
+    },
+    /// Fault alert (rover → dock).
+    #[allow(dead_code)] // Protocol-defined, not yet generated
+    FaultAlert {
+        /// Module identifier.
+        module_id: String,
+        /// Fault description.
+        fault: String,
     },
 }
 

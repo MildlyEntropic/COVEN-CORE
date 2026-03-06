@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 //! main.rs — COVEN Rover Daemon
 //!
 //! Lightweight rover controller for COVEN-compliant reconnaissance modules.

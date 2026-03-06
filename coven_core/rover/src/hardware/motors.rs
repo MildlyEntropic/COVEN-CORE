@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 //! motors.rs — TB6612FNG Motor Driver
 //!
 //! Controls a differential drive robot using PWM for speed and GPIO for direction.

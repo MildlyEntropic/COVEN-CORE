@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """
 dispatch_tracker.py — Rover status tracking for the frontier dispatcher.
 
@@ -13,7 +14,7 @@ from enum import Enum
 from dataclasses import dataclass
 
 
-class RoverStatus(Enum):
+class DispatchStatus(Enum):
     """Rover availability states."""
     IDLE = "idle"           # At dock, ready for mission
     DEPLOYED = "deployed"   # Out on mission
@@ -25,10 +26,10 @@ class RoverStatus(Enum):
 class RoverInfo:
     """Tracked information about a rover."""
     module_id: str
-    status: RoverStatus
+    status: DispatchStatus
     last_position: Tuple[float, float]
     current_mission: Optional[str] = None
     missions_completed: int = 0
     registered_time: float = 0.0  # When the rover first registered
     dispatch_time: float = 0.0    # When last dispatched (to detect race conditions)
-    previous_status: Optional[RoverStatus] = None  # Track state transitions
+    previous_status: Optional[DispatchStatus] = None  # Track state transitions

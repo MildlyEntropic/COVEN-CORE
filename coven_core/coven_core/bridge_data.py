@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """
 bridge_data.py — Sensor batch processing and disk persistence.
 

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 //! utils.rs — Common Utility Functions
 //!
 //! Shared utility functions used across the rover codebase.

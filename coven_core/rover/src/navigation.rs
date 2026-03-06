@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 //! navigation.rs — COVEN Lyapunov Navigation
 //!
 //! Lyapunov-based potential field navigation for reactive obstacle avoidance.

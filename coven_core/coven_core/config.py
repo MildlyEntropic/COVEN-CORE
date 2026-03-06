@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """
 config.py - Centralized configuration for COVEN
 

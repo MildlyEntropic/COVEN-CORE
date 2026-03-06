@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """
 frontier_analysis.py — Pure frontier detection and scoring functions.
 

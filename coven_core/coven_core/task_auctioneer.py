@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
 """
 task_auctioneer.py - Auction-based task allocation for COVEN swarm
 

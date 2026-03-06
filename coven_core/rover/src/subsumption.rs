@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 //! subsumption.rs — COVEN Subsumption Architecture
 //!
 //! Layered behavioral architecture where higher-priority layers can suppress

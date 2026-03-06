@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """
 enums.py — COVEN state enums and ANSI color codes.
 

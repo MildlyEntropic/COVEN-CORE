@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 //! lidar.rs — YDLiDAR X4 Driver
 //!
 //! Communicates with the YDLiDAR X4 over serial to receive laser scans.

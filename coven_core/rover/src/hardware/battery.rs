@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 //! battery.rs — Battery Voltage Reader
 //!
 //! Reads battery voltage using I2C ADC for power monitoring.

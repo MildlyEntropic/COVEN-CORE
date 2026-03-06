@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """
 messages.py — COVEN protocol message dataclasses.
 
@@ -373,7 +374,7 @@ class VelocityCommand:
 
 
 @dataclass
-class RoverStatus:
+class RoverStatusMsg:
     """Simplified status message from rover to dock.
 
     Lightweight periodic update. More detailed than heartbeat,

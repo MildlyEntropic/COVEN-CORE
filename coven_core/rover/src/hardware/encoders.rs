@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 //! encoders.rs — Quadrature Encoder Reader
 //!
 //! Uses GPIO interrupts to count encoder ticks and compute odometry.

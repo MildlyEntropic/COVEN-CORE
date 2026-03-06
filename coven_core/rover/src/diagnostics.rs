@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 //! diagnostics.rs — Hardware Diagnostic Logging
 //!
 //! Centralized error logging and diagnostic output for hardware initialization.

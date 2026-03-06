@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 //! config.rs — COVEN Rover Configuration
 //!
 //! Defines configuration structures for all rover subsystems.

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """
 serialization.py - Generic JSON serialization for COVEN message dataclasses
 

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """
 common.py — COVEN backward-compatibility re-export hub.
 

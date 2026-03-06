@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """
 bridge_topics.py — Per-rover ROS2 topic management.
 

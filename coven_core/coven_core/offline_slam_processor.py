@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
 """
 offline_slam_processor.py - Dock-Side Offline SLAM Processor
 

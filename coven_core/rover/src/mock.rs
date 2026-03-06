@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 //! mock.rs — Mock Hardware Simulation
 //!
 //! Provides simulated motors, encoders, and LiDAR for desktop testing.

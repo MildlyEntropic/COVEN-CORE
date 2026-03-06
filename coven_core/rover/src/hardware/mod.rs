@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 //! mod.rs — COVEN Hardware Abstraction Layer
 //!
 //! Provides unified access to motors, encoders, battery, and other GPIO peripherals.

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 //! state.rs — COVEN Rover State Machine
 //!
 //! Implements the rover-side FSM for the COVEN protocol lifecycle.
@@ -244,7 +245,10 @@ impl RoverStateMachine {
 
             if self.last_battery_read.elapsed() >= battery_interval {
                 if let Some(ref mut battery) = self.battery {
-                    if let Ok(pct) = battery.read_percent() {
+                    // block_in_place: I2C reads block ~7ms (thread::sleep + rppal).
+                    // Tells tokio to move other tasks off this thread while we block.
+                    let pct = tokio::task::block_in_place(|| battery.read_percent());
+                    if let Ok(pct) = pct {
                         self.battery_pct = pct;
                     }
                 }

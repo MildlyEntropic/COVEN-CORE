@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """
 bridge_protocol.py — COVEN handshake and message protocol handler.
 

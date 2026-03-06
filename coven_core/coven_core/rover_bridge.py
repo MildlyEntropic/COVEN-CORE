@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """
 rover_bridge.py — COVEN Rover Bridge
 

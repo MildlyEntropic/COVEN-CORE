@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """
 codecs.py — COVEN message encode/decode wrappers.
 
@@ -19,7 +20,7 @@ from coven_core.messages import (
     BidNotice, BidProposal,
     CoverageGoal, CoverageStatus, CoverageMissionComplete,
     RoverRegistration, RoverRegistrationAck,
-    SensorData, VelocityCommand, RoverStatus, DockCommand,
+    SensorData, VelocityCommand, RoverStatusMsgMsg, DockCommand,
 )
 
 
@@ -231,14 +232,14 @@ def velocity_command_decode(msg: String) -> Optional[VelocityCommand]:
 
 
 # ROVER_STATUS
-def rover_status_encode(rs: RoverStatus) -> str:
-    """Encode RoverStatus to JSON string."""
+def rover_status_encode(rs: RoverStatusMsg) -> str:
+    """Encode RoverStatusMsg to JSON string."""
     return _generic_encode(rs)
 
 
-def rover_status_decode(msg: String) -> Optional[RoverStatus]:
-    """Decode RoverStatus from ROS String message."""
-    return _generic_decode(msg, RoverStatus)
+def rover_status_decode(msg: String) -> Optional[RoverStatusMsg]:
+    """Decode RoverStatusMsg from ROS String message."""
+    return _generic_decode(msg, RoverStatusMsg)
 
 
 # DOCK_COMMAND

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
 """
 frontier_dispatcher.py - Frontier Detection and Rover Dispatch
 
@@ -30,7 +31,7 @@ from nav_msgs.msg import OccupancyGrid
 from std_msgs.msg import String
 
 from coven_core.frontier_analysis import Frontier, analyze_frontiers
-from coven_core.dispatch_tracker import RoverStatus, RoverInfo
+from coven_core.dispatch_tracker import DispatchStatus, RoverInfo
 
 
 class FrontierDispatcher(Node):
@@ -153,9 +154,9 @@ class FrontierDispatcher(Node):
 
         state_str = data.get('state', 'idle')
         try:
-            status = RoverStatus(state_str)
+            status = DispatchStatus(state_str)
         except ValueError:
-            status = RoverStatus.IDLE
+            status = DispatchStatus.IDLE
 
         position = data.get('position', {})
         pos = (position.get('x', 0.0), position.get('y', 0.0))
@@ -183,7 +184,7 @@ class FrontierDispatcher(Node):
         # Check if rover just completed a mission
         prev = self.rovers[module_id].previous_status
         time_since_dispatch = now - self.rovers[module_id].dispatch_time
-        transitioned_to_idle = (status == RoverStatus.IDLE and prev is not None and prev != RoverStatus.IDLE)
+        transitioned_to_idle = (status == DispatchStatus.IDLE and prev is not None and prev != DispatchStatus.IDLE)
 
         if transitioned_to_idle and self.rovers[module_id].current_mission and time_since_dispatch > 5.0:
             self.rovers[module_id].missions_completed += 1
@@ -191,7 +192,7 @@ class FrontierDispatcher(Node):
             self.rovers[module_id].current_mission = None
 
             if self.exploration_complete:
-                deployed_count = sum(1 for r in self.rovers.values() if r.status == RoverStatus.DEPLOYED)
+                deployed_count = sum(1 for r in self.rovers.values() if r.status == DispatchStatus.DEPLOYED)
                 self.get_logger().info(
                     f'[Dispatcher] Rover {module_id} returned (mission {mission}). '
                     f'Still out: {deployed_count}'
@@ -285,7 +286,7 @@ class FrontierDispatcher(Node):
             if module_id not in self.rovers:
                 self.rovers[module_id] = RoverInfo(
                     module_id=module_id,
-                    status=RoverStatus.IDLE,
+                    status=DispatchStatus.IDLE,
                     last_position=(rover_info.get('x', 0.0), rover_info.get('y', 0.0)),
                     registered_time=self.get_clock().now().nanoseconds / 1e9
                 )
@@ -304,7 +305,7 @@ class FrontierDispatcher(Node):
         now = self.get_clock().now().nanoseconds / 1e9
         idle_rovers = [
             r for r in self.rovers.values()
-            if r.status == RoverStatus.IDLE and (now - r.registered_time) >= 5.0
+            if r.status == DispatchStatus.IDLE and (now - r.registered_time) >= 5.0
         ]
         if not idle_rovers:
             return
@@ -325,7 +326,7 @@ class FrontierDispatcher(Node):
         if self.exploration_complete or not self.auto_dispatch or not self.initial_dispatched:
             return
 
-        idle_rovers = [r for r in self.rovers.values() if r.status == RoverStatus.IDLE]
+        idle_rovers = [r for r in self.rovers.values() if r.status == DispatchStatus.IDLE]
         if not idle_rovers:
             return
 
@@ -363,7 +364,7 @@ class FrontierDispatcher(Node):
         if self.exploration_complete or not self.auto_dispatch:
             return
 
-        idle_rovers = [r for r in self.rovers.values() if r.status == RoverStatus.IDLE]
+        idle_rovers = [r for r in self.rovers.values() if r.status == DispatchStatus.IDLE]
         if not idle_rovers:
             self.get_logger().info('[Dispatcher] No idle rovers available')
             return
@@ -379,7 +380,7 @@ class FrontierDispatcher(Node):
         # Show bidding info
         rover_summary = []
         for r in self.rovers.values():
-            status_icon = '✓' if r.status == RoverStatus.IDLE else '→' if r.status == RoverStatus.DEPLOYED else '?'
+            status_icon = '✓' if r.status == DispatchStatus.IDLE else '→' if r.status == DispatchStatus.DEPLOYED else '?'
             rover_summary.append(f'{r.module_id}[{status_icon}]')
 
         self.get_logger().info('[Dispatcher] ─── Parallel Dispatch ───')
@@ -467,7 +468,7 @@ class FrontierDispatcher(Node):
 
         if self.current_coverage >= self.coverage_goal and not self.exploration_complete:
             self.exploration_complete = True
-            deployed_count = sum(1 for r in self.rovers.values() if r.status == RoverStatus.DEPLOYED)
+            deployed_count = sum(1 for r in self.rovers.values() if r.status == DispatchStatus.DEPLOYED)
             self.get_logger().info(
                 '[Dispatcher] ════════════════════════════════════════════'
             )
@@ -490,8 +491,8 @@ class FrontierDispatcher(Node):
 
     def _publish_status(self):
         """Broadcast dispatcher status."""
-        idle_count = sum(1 for r in self.rovers.values() if r.status == RoverStatus.IDLE)
-        deployed_count = sum(1 for r in self.rovers.values() if r.status == RoverStatus.DEPLOYED)
+        idle_count = sum(1 for r in self.rovers.values() if r.status == DispatchStatus.IDLE)
+        deployed_count = sum(1 for r in self.rovers.values() if r.status == DispatchStatus.DEPLOYED)
 
         status = {
             'exploration_complete': self.exploration_complete,

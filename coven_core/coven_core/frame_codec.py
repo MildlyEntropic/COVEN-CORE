@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """
 frame_codec.py — COVEN binary frame codec for dock-rover communication.
 

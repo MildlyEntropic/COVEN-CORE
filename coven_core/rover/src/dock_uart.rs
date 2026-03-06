@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 //! dock_uart.rs — COVEN Dock UART Communication
 //!
 //! Serial UART communication with dock via the COVEN 9-pin connector.
@@ -984,6 +985,18 @@ fn encode_message(msg: &RoverMessage) -> Result<(u8, Vec<u8>)> {
             payload.push(0x20); // Subtype: SENSOR_DATA
             payload.extend_from_slice(&json);
             Ok((MessageType::DataFrame as u8, payload))
+        }
+
+        RoverMessage::FaultAlert { module_id, fault } => {
+            let mut payload = Vec::new();
+            let id_bytes = module_id.as_bytes();
+            payload.push(id_bytes.len() as u8);
+            payload.extend_from_slice(id_bytes);
+            let fault_bytes = fault.as_bytes();
+            let fault_len = fault_bytes.len().min(255);
+            payload.push(fault_len as u8);
+            payload.extend_from_slice(&fault_bytes[..fault_len]);
+            Ok((MessageType::FaultAlert as u8, payload))
         }
     }
 }
