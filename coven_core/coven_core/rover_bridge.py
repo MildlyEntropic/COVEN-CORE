@@ -411,7 +411,7 @@ class RoverBridge(Node):
             "state": state,
             "position": {"x": rover.x, "y": rover.y},
             "battery_level": rover.battery_level,
-            "current_mission": getattr(rover, 'current_mission', None),
+            "current_mission": rover.current_mission_id,
         }
 
         msg = String()
@@ -437,8 +437,8 @@ class RoverBridge(Node):
     # Auctioneer Integration
     # -------------------------------------------------------------------------
 
-    async def _send_task_from_auctioneer(self, module_id: str, task_req: dict):
-        """Callback from auctioneer to send TASK_REQ to a rover (async for auctioneer compat)."""
+    def _send_task_from_auctioneer(self, module_id: str, task_req: dict):
+        """Callback from auctioneer to send TASK_REQ to a rover."""
         with self.rovers_lock:
             rover = self.rovers.get(module_id)
             if not rover or rover.state != RoverState.ACTIVE:
@@ -487,8 +487,6 @@ class RoverBridge(Node):
 
     def _try_dispatch_missions(self):
         """Timer callback to try dispatching missions from queue."""
-        import asyncio
-
         if not self.auctioneer.mission_queue:
             return
 
@@ -496,15 +494,7 @@ class RoverBridge(Node):
         if idle_count == 0:
             return
 
-        try:
-            asyncio.run(self.auctioneer.try_dispatch())
-        except RuntimeError:
-            # Event loop already running — use a new thread
-            loop = asyncio.new_event_loop()
-            try:
-                loop.run_until_complete(self.auctioneer.try_dispatch())
-            finally:
-                loop.close()
+        self.auctioneer.try_dispatch()
 
     def _publish_auctioneer_status(self):
         """Publish auctioneer status for monitoring."""

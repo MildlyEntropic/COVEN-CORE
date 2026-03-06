@@ -37,9 +37,6 @@ setup(
 
     entry_points={
         'console_scripts': [
-            # Dock coordination node
-            'dock = coven_core.dock_node:main',
-            'coven_dock = coven_core.dock_node:main',
             # UART bridge: Rust rover <-> ROS2 ecosystem
             'rover_bridge = coven_core.rover_bridge:main',
             # Offline SLAM: processes recorded sensor batches

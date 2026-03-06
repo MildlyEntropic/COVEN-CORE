@@ -9,7 +9,6 @@
   <license>MIT</license>
 
   <!-- Build tools -->
-  <buildtool_depend>ament_cmake</buildtool_depend>
   <buildtool_depend>ament_python</buildtool_depend>
 
   <!-- Runtime dependencies -->

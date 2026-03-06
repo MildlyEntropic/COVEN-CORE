@@ -27,7 +27,8 @@ import os
 
 def generate_launch_description():
     # Get package path for config files
-    pkg_path = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+    from ament_index_python.packages import get_package_share_directory
+    pkg_path = get_package_share_directory('coven_core')
     config_path = os.path.join(pkg_path, 'config')
     slam_params_file = os.path.join(config_path, 'slam_params_hw.yaml')
 

@@ -163,7 +163,7 @@ class DataBatchProcessor:
                 scan.range_max = 10.0
 
                 scan.ranges = [
-                    float(r) / 1000.0 if r > 0 else float('inf')
+                    float(r) / 1000.0 if r > 0 else 0.0
                     for r in lidar_ranges_mm
                 ]
 
@@ -270,7 +270,7 @@ class DataBatchProcessor:
                 theta += 2.0 * math.pi
 
             scan_ranges = [
-                float(r) / 1000.0 if r > 0 else float('inf')
+                float(r) / 1000.0 if r > 0 else 0.0
                 for r in lidar_ranges_mm
             ]
 

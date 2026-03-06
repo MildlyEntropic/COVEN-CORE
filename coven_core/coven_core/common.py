@@ -2,10 +2,10 @@
 common.py — COVEN backward-compatibility re-export hub.
 
 All symbols formerly defined here now live in focused modules:
-  enums.py    — DockState, ModuleState, SimplifiedModuleState, COLOR_*
+  enums.py    — COLOR_*
   naming.py   — WITCH_NAMES, COVEN_NAMES, get_witch_name, etc.
-  messages.py — 26 message dataclasses
-  codecs.py   — 26 encode/decode wrapper functions
+  messages.py — message dataclasses
+  codecs.py   — encode/decode wrapper functions
 
 This file re-exports everything so that existing
 ``from coven_core.common import X`` and

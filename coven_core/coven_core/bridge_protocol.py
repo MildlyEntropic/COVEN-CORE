@@ -276,7 +276,7 @@ class ProtocolHandler:
 
         ranges_mm = scan_data.get("ranges_mm", [])
         scan.ranges = [
-            float(r) / 1000.0 if r > 0 else float('inf')
+            float(r) / 1000.0 if r > 0 else 0.0
             for r in ranges_mm
         ]
 

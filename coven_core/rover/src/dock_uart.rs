@@ -1,19 +1,17 @@
 //! dock_uart.rs — COVEN Dock UART Communication
 //!
 //! Serial UART communication with dock via the COVEN 9-pin connector.
-//! Implements the framed protocol from COVEN Interface Specification v0.2.
+//! Implements the framed protocol from COVEN Interface Specification v0.3.
 //!
 //! Key design: NO WIRELESS COMMUNICATION while deployed.
 //! The rover only communicates when physically docked via the 9-pin connector.
 //!
-//! Frame format (per Interface Spec):
-//!   [START] [TYPE] [LEN] [PAYLOAD] [CRC] [END]
-//!   - START: 0x7E
-//!   - TYPE:  Message type byte (0x01-0xFF)
-//!   - LEN:   Payload length (1 byte, max 255)
-//!   - PAYLOAD: Variable length data
-//!   - CRC:   8-bit checksum (XOR of TYPE, LEN, and PAYLOAD)
-//!   - END:   0x7F
+//! Frame format (per Interface Spec v0.3 — COBS):
+//!   [LEN_HI] [LEN_LO] [COBS-encoded data] [0x00]
+//!   - LEN:   16-bit big-endian length of COBS-encoded data
+//!   - DATA:  COBS encoding of [TYPE][PAYLOAD][CRC]
+//!   - 0x00:  COBS frame terminator (guaranteed absent in encoded data)
+//!   - CRC:   XOR of TYPE and all PAYLOAD bytes (pre-COBS)
 //!
 //! Message Types (from spec):
 //!   0x01 — IDENTIFY_REQUEST (dock → rover)
@@ -56,15 +54,10 @@ use crate::protocol::{DockMessage, RoverMessage};
 // --- Constants ---
 // ------------------------
 
-/// UART frame start byte (per Interface Spec).
-const FRAME_START: u8 = 0x7E;
-/// UART frame end byte (per Interface Spec).
-const FRAME_END: u8 = 0x7F;
-
-/// Maximum frame payload size.
-const MAX_PAYLOAD_SIZE: usize = 255;
-/// Maximum total frame size (start + type + len + payload + crc + end).
-const MAX_FRAME_SIZE: usize = MAX_PAYLOAD_SIZE + 5;
+/// Maximum frame payload size (up from 255 in v0.2).
+const MAX_PAYLOAD_SIZE: usize = 8192;
+/// Maximum total frame size (len prefix + COBS overhead + terminator).
+const MAX_FRAME_SIZE: usize = MAX_PAYLOAD_SIZE + 512;
 
 /// Message types from Interface Specification v0.2.
 #[repr(u8)]
@@ -109,8 +102,79 @@ impl MessageType {
 // --- Connection State ---
 // ------------------------
 
+// ------------------------
+// --- COBS Encode/Decode ---
+// ------------------------
+
+/// COBS encode: guarantees no 0x00 bytes in output.
+fn cobs_encode(data: &[u8]) -> Vec<u8> {
+    let mut output = Vec::with_capacity(data.len() + data.len() / 254 + 1);
+    let mut idx = 0;
+
+    while idx <= data.len() {
+        // Find next zero byte (or end of data)
+        let next_zero = data[idx..].iter().position(|&b| b == 0)
+            .map(|p| idx + p)
+            .unwrap_or(data.len());
+
+        let mut block_len = next_zero - idx;
+
+        // Handle blocks > 253 bytes
+        while block_len > 253 {
+            output.push(0xFF);
+            output.extend_from_slice(&data[idx..idx + 254]);
+            idx += 254;
+            block_len -= 254;
+        }
+
+        // Write code byte + block
+        output.push((block_len + 1) as u8);
+        output.extend_from_slice(&data[idx..idx + block_len]);
+        idx += block_len;
+
+        // Skip past zero byte if present
+        if idx < data.len() && data[idx] == 0 {
+            idx += 1;
+        } else {
+            break;
+        }
+    }
+
+    output
+}
+
+/// COBS decode: inverse of cobs_encode.
+fn cobs_decode(data: &[u8]) -> Result<Vec<u8>> {
+    let mut output = Vec::with_capacity(data.len());
+    let mut idx = 0;
+
+    while idx < data.len() {
+        let code = data[idx] as usize;
+        idx += 1;
+
+        if code == 0 {
+            anyhow::bail!("Unexpected zero in COBS data at offset {}", idx - 1);
+        }
+
+        let end = idx + code - 1;
+        if end > data.len() {
+            anyhow::bail!("COBS data truncated: need {} bytes from offset {}", code - 1, idx);
+        }
+        output.extend_from_slice(&data[idx..end]);
+        idx = end;
+
+        // If code < 0xFF and more data follows, insert implicit zero
+        if code < 0xFF && idx < data.len() {
+            output.push(0);
+        }
+    }
+
+    Ok(output)
+}
+
 /// Physical docking state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // Protocol states — used as state machine transitions are wired in
 pub enum DockState {
     /// Not physically connected to dock.
     Disconnected,
@@ -201,6 +265,7 @@ impl DockUart {
     }
 
     /// Create with default configuration.
+    #[allow(dead_code)]
     pub fn with_defaults() -> Self {
         Self::new(DockUartConfig::default())
     }
@@ -269,6 +334,7 @@ impl DockUart {
     }
 
     /// Get current dock connection state.
+    #[allow(dead_code)]
     pub fn state(&self) -> DockState {
         self.state
     }
@@ -406,16 +472,27 @@ async fn handle_uart_connection(
     incoming_tx: &mpsc::Sender<DockMessage>,
     stop_rx: &mut mpsc::Receiver<()>,
 ) -> Result<()> {
-    let mut read_buf = [0u8; MAX_FRAME_SIZE];
+    let mut read_buf = [0u8; 4096];
     let mut frame_buf = Vec::with_capacity(MAX_FRAME_SIZE);
-    let mut in_frame = false;
+
+    // COBS frame parser state machine
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    enum ParseState {
+        WaitLenHi,
+        WaitLenLo,
+        Reading,
+        WaitTerm,
+    }
+    let mut parse_state = ParseState::WaitLenHi;
+    let mut len_hi: u8 = 0;
+    let mut expected_len: usize = 0;
 
     // Statistics
     let mut frames_sent: u64 = 0;
     let mut frames_received: u64 = 0;
     let mut crc_errors: u64 = 0;
 
-    trace!("UART handler started, entering message loop");
+    trace!("UART handler started, entering message loop (COBS framing)");
 
     loop {
         tokio::select! {
@@ -431,55 +508,60 @@ async fn handle_uart_connection(
             result = port.read(&mut read_buf) => {
                 match result {
                     Ok(0) => {
-                        // No data available (timeout)
                         continue;
                     }
                     Ok(n) => {
-                        // Process received bytes
+                        // Process received bytes through COBS state machine
                         for &byte in &read_buf[..n] {
-                            if byte == FRAME_START {
-                                // Start of new frame
-                                frame_buf.clear();
-                                frame_buf.push(byte);
-                                in_frame = true;
-                            } else if in_frame {
-                                frame_buf.push(byte);
-
-                                // Check for frame end
-                                if byte == FRAME_END {
-                                    in_frame = false;
-
-                                    // Try to parse frame
-                                    match parse_frame(&frame_buf) {
-                                        Ok(Some(msg)) => {
-                                            frames_received += 1;
-                                            debug!(
-                                                frame = frames_received,
-                                                "Received dock message"
-                                            );
-                                            if incoming_tx.send(msg).await.is_err() {
-                                                warn!("Message receiver dropped");
-                                                return Ok(());
+                            match parse_state {
+                                ParseState::WaitLenHi => {
+                                    len_hi = byte;
+                                    parse_state = ParseState::WaitLenLo;
+                                }
+                                ParseState::WaitLenLo => {
+                                    expected_len = ((len_hi as usize) << 8) | (byte as usize);
+                                    if expected_len == 0 || expected_len > MAX_FRAME_SIZE {
+                                        parse_state = ParseState::WaitLenHi;
+                                        continue;
+                                    }
+                                    frame_buf.clear();
+                                    parse_state = ParseState::Reading;
+                                }
+                                ParseState::Reading => {
+                                    frame_buf.push(byte);
+                                    if frame_buf.len() >= expected_len {
+                                        parse_state = ParseState::WaitTerm;
+                                    }
+                                }
+                                ParseState::WaitTerm => {
+                                    if byte == 0x00 {
+                                        // Complete frame — parse it
+                                        match parse_frame(&frame_buf) {
+                                            Ok(Some(msg)) => {
+                                                frames_received += 1;
+                                                debug!(
+                                                    frame = frames_received,
+                                                    "Received dock message"
+                                                );
+                                                if incoming_tx.send(msg).await.is_err() {
+                                                    warn!("Message receiver dropped");
+                                                    return Ok(());
+                                                }
+                                            }
+                                            Ok(None) => {
+                                                trace!("Unrecognized message type in frame");
+                                            }
+                                            Err(e) => {
+                                                crc_errors += 1;
+                                                warn!("Frame parse error: {} (total CRC errors: {})", e, crc_errors);
                                             }
                                         }
-                                        Ok(None) => {
-                                            // Valid frame but unrecognized message type
-                                            trace!("Unrecognized message type in frame");
-                                        }
-                                        Err(e) => {
-                                            crc_errors += 1;
-                                            warn!("Frame parse error: {} (total CRC errors: {})", e, crc_errors);
-                                        }
+                                    } else {
+                                        crc_errors += 1;
+                                        warn!("Missing COBS terminator");
                                     }
-
                                     frame_buf.clear();
-                                }
-
-                                // Prevent buffer overflow
-                                if frame_buf.len() > MAX_FRAME_SIZE {
-                                    warn!("Frame too large, discarding");
-                                    frame_buf.clear();
-                                    in_frame = false;
+                                    parse_state = ParseState::WaitLenHi;
                                 }
                             }
                         }
@@ -528,7 +610,9 @@ async fn handle_uart_connection(
 // --- Frame Building ---
 // ------------------------
 
-/// Build a framed UART message from a RoverMessage.
+/// Build a COBS-framed UART message from a RoverMessage.
+///
+/// Wire format: [LEN_HI][LEN_LO][COBS data][0x00]
 fn build_frame(msg: &RoverMessage) -> Result<Vec<u8>> {
     // Determine message type and payload
     let (msg_type, payload) = encode_message(msg)?;
@@ -541,21 +625,27 @@ fn build_frame(msg: &RoverMessage) -> Result<Vec<u8>> {
         );
     }
 
-    // Calculate CRC (XOR of type, len, and payload)
+    // Build raw block: [TYPE] [PAYLOAD] [CRC]
     let mut crc: u8 = msg_type;
-    crc ^= payload.len() as u8;
     for &b in &payload {
         crc ^= b;
     }
 
-    // Build frame: [START] [TYPE] [LEN] [PAYLOAD...] [CRC] [END]
-    let mut frame = Vec::with_capacity(payload.len() + 5);
-    frame.push(FRAME_START);
-    frame.push(msg_type);
-    frame.push(payload.len() as u8);
-    frame.extend_from_slice(&payload);
-    frame.push(crc);
-    frame.push(FRAME_END);
+    let mut raw = Vec::with_capacity(payload.len() + 2);
+    raw.push(msg_type);
+    raw.extend_from_slice(&payload);
+    raw.push(crc);
+
+    // COBS encode (no zeros in output)
+    let encoded = cobs_encode(&raw);
+
+    // Build frame: [LEN_HI][LEN_LO][COBS data][0x00]
+    let len = encoded.len() as u16;
+    let mut frame = Vec::with_capacity(encoded.len() + 3);
+    frame.push((len >> 8) as u8);
+    frame.push(len as u8);
+    frame.extend_from_slice(&encoded);
+    frame.push(0x00); // COBS terminator
 
     Ok(frame)
 }
@@ -699,7 +789,7 @@ fn encode_message(msg: &RoverMessage) -> Result<(u8, Vec<u8>)> {
             let json = serde_json::to_vec(msg)?;
             let mut payload = Vec::new();
             payload.push(0x10); // Subtype: TASK_MESSAGE
-            payload.extend_from_slice(&json[..json.len().min(MAX_PAYLOAD_SIZE - 1)]);
+            payload.extend_from_slice(&json);
             Ok((MessageType::DataFrame as u8, payload))
         }
 
@@ -709,16 +799,6 @@ fn encode_message(msg: &RoverMessage) -> Result<(u8, Vec<u8>)> {
             // Large data uses chunked DATA_FRAME with JSON
             // Note: For very large batches, this should be chunked
             let json = serde_json::to_vec(msg)?;
-
-            if json.len() > MAX_PAYLOAD_SIZE - 1 {
-                // For large payloads, we'd need chunking
-                // For now, return error - caller should chunk
-                anyhow::bail!(
-                    "DataBatch too large for single frame ({} bytes). Chunking required.",
-                    json.len()
-                );
-            }
-
             let mut payload = Vec::new();
             payload.push(0x20); // Subtype: SENSOR_DATA
             payload.extend_from_slice(&json);
@@ -731,40 +811,24 @@ fn encode_message(msg: &RoverMessage) -> Result<(u8, Vec<u8>)> {
 // --- Frame Parsing ---
 // ------------------------
 
-/// Parse a framed UART message into a DockMessage.
-fn parse_frame(frame: &[u8]) -> Result<Option<DockMessage>> {
-    // Minimum frame: START + TYPE + LEN + CRC + END = 5 bytes
-    if frame.len() < 5 {
-        anyhow::bail!("Frame too short: {} bytes", frame.len());
+/// Parse a COBS-encoded frame into a DockMessage.
+///
+/// Input is the COBS-encoded data (without length prefix or terminator).
+fn parse_frame(cobs_data: &[u8]) -> Result<Option<DockMessage>> {
+    // COBS decode
+    let raw = cobs_decode(cobs_data)?;
+
+    // Minimum: TYPE + CRC = 2 bytes
+    if raw.len() < 2 {
+        anyhow::bail!("Decoded frame too short: {} bytes", raw.len());
     }
 
-    // Verify frame markers
-    if frame[0] != FRAME_START {
-        anyhow::bail!("Invalid start byte: 0x{:02X}", frame[0]);
-    }
-    if frame[frame.len() - 1] != FRAME_END {
-        anyhow::bail!("Invalid end byte: 0x{:02X}", frame[frame.len() - 1]);
-    }
+    let msg_type = raw[0];
+    let payload = &raw[1..raw.len() - 1];
+    let received_crc = raw[raw.len() - 1];
 
-    let msg_type = frame[1];
-    let payload_len = frame[2] as usize;
-    let expected_frame_len = payload_len + 5; // start + type + len + payload + crc + end
-
-    if frame.len() != expected_frame_len {
-        anyhow::bail!(
-            "Frame length mismatch: expected {}, got {}",
-            expected_frame_len,
-            frame.len()
-        );
-    }
-
-    // Extract payload and CRC
-    let payload = &frame[3..3 + payload_len];
-    let received_crc = frame[3 + payload_len];
-
-    // Calculate expected CRC
+    // Calculate expected CRC (XOR of type and payload)
     let mut expected_crc: u8 = msg_type;
-    expected_crc ^= payload_len as u8;
     for &b in payload {
         expected_crc ^= b;
     }
@@ -786,7 +850,6 @@ fn parse_frame(frame: &[u8]) -> Result<Option<DockMessage>> {
         Some(MessageType::VerifyFail) => parse_verify_fail(payload),
         Some(MessageType::DataFrame) => parse_data_frame(payload),
         Some(MessageType::SystemPing) => {
-            // Ping doesn't map to a DockMessage, just acknowledge
             trace!("Received SYSTEM_PING");
             Ok(None)
         }
@@ -877,14 +940,40 @@ fn parse_verify_ok(payload: &[u8]) -> Result<Option<DockMessage>> {
         String::new()
     };
 
-    Ok(Some(DockMessage::VerifyReq { dock_id, module_id }))
+    Ok(Some(DockMessage::VerifyReq { dock_id, module_id, accepted: true }))
 }
 
 /// Parse VERIFY_FAIL payload.
 fn parse_verify_fail(payload: &[u8]) -> Result<Option<DockMessage>> {
-    // For VERIFY_FAIL, we return it as a VerifyReq that will fail verification
-    // The actual failure is indicated by the message type, not content
-    parse_verify_ok(payload)
+    // Same payload format as VERIFY_OK, but dock is rejecting this module
+    if payload.is_empty() {
+        anyhow::bail!("Empty VERIFY_FAIL payload");
+    }
+
+    let mut pos = 0;
+
+    // Dock ID
+    let dock_id_len = payload[pos] as usize;
+    pos += 1;
+    if pos + dock_id_len > payload.len() {
+        anyhow::bail!("VERIFY_FAIL: dock_id length exceeds payload");
+    }
+    let dock_id = String::from_utf8_lossy(&payload[pos..pos + dock_id_len]).to_string();
+    pos += dock_id_len;
+
+    // Module ID
+    if pos >= payload.len() {
+        anyhow::bail!("VERIFY_FAIL: missing module_id");
+    }
+    let module_id_len = payload[pos] as usize;
+    pos += 1;
+    let module_id = if pos + module_id_len <= payload.len() {
+        String::from_utf8_lossy(&payload[pos..pos + module_id_len]).to_string()
+    } else {
+        String::new()
+    };
+
+    Ok(Some(DockMessage::VerifyReq { dock_id, module_id, accepted: false }))
 }
 
 /// Parse DATA_FRAME payload (task requests, etc.).
@@ -934,13 +1023,3 @@ fn parse_data_frame(payload: &[u8]) -> Result<Option<DockMessage>> {
     }
 }
 
-// ------------------------
-// --- Legacy Compatibility ---
-// ------------------------
-
-// For compatibility with existing code that uses DockConnection,
-// we provide a type alias. The state machine code can gradually
-// migrate to using DockUart directly.
-
-/// Type alias for backward compatibility.
-pub type DockConnection = DockUart;

@@ -163,11 +163,21 @@ class OfflineSLAMProcessor(Node):
             self._process_mission_data(queued)
 
     def _process_mission_data(self, mission: QueuedMission):
-        """Load and replay recorded sensor data to SLAM."""
+        """Kick off replay in a background thread to avoid blocking the ROS2 executor."""
         self.processing = True
         self.current_mission_id = mission.mission_id
         self.current_module_id = mission.module_id
 
+        import threading
+        thread = threading.Thread(
+            target=self._replay_mission_thread,
+            args=(mission,),
+            daemon=True,
+        )
+        thread.start()
+
+    def _replay_mission_thread(self, mission: QueuedMission):
+        """Background thread: load and replay recorded sensor data to SLAM."""
         # Derive SLAM directory from data file path
         # Path format: .../Data/{session}/{coven}/{rover}/Scan[...].json
         # We want: .../Data/{session}/{coven}/SLAM/

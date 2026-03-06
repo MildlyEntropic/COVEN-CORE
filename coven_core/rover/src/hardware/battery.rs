@@ -192,25 +192,25 @@ impl BatteryReader {
             .block_write(ADS_CONFIG_REG, &config_bytes)
             .context("Failed to write ADC config")?;
 
-        // Poll for conversion complete (OS bit = 1) with timeout
-        let timeout = std::time::Instant::now();
-        loop {
-            let mut config_buf = [0u8; 2];
+        // Wait for ADC conversion (ADS1115 at 1600SPS ≈ 0.625ms)
+        // Fixed delay instead of polling loop to minimize blocking time
+        std::thread::sleep(std::time::Duration::from_millis(2));
+
+        // Check conversion complete (OS bit = 1)
+        let mut config_buf = [0u8; 2];
+        self.i2c
+            .block_read(ADS_CONFIG_REG, &mut config_buf)
+            .context("Failed to read ADC config during conversion")?;
+
+        if (config_buf[0] & 0x80) == 0 {
+            // Not done yet, one more short wait
+            std::thread::sleep(std::time::Duration::from_millis(5));
             self.i2c
                 .block_read(ADS_CONFIG_REG, &mut config_buf)
-                .context("Failed to read ADC config during conversion")?;
-
-            // Check OS bit (bit 15) - 1 means conversion complete
-            if (config_buf[0] & 0x80) != 0 {
-                break;
-            }
-
-            // Timeout after 100ms (more than enough for ADS1115)
-            if timeout.elapsed() > std::time::Duration::from_millis(100) {
+                .context("Failed to read ADC config during conversion retry")?;
+            if (config_buf[0] & 0x80) == 0 {
                 return Err(anyhow::anyhow!("ADC conversion timeout"));
             }
-
-            std::thread::sleep(std::time::Duration::from_millis(1));
         }
 
         // Read conversion result

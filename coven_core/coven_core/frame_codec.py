@@ -5,14 +5,15 @@ Mirrors the Rust implementation in rover/src/dock_uart.rs exactly.
 The dock Python side uses this to build/parse the same binary frames
 that the Rust rover firmware sends/receives over UART.
 
-Frame format (per Interface Specification v0.2):
-  [START] [TYPE] [LEN] [PAYLOAD] [CRC] [END]
-  - START: 0x7E
-  - TYPE:  Message type byte (0x01-0xFF)
-  - LEN:   Payload length (1 byte, max 255)
-  - PAYLOAD: Variable length data
-  - CRC:   8-bit checksum (XOR of TYPE, LEN, and PAYLOAD)
-  - END:   0x7F
+Frame format (per Interface Specification v0.3 — COBS):
+  [LEN_HI] [LEN_LO] [COBS-encoded data] [0x00]
+  - LEN:   16-bit big-endian length of COBS-encoded data
+  - DATA:  COBS encoding of [TYPE][PAYLOAD][CRC]
+  - 0x00:  COBS frame terminator (guaranteed absent in encoded data)
+  - CRC:   XOR of TYPE and all PAYLOAD bytes (pre-COBS)
+
+COBS (Consistent Overhead Byte Stuffing) guarantees no 0x00 bytes
+appear in the encoded data, making 0x00 an unambiguous delimiter.
 
 Author: Alexander Shultis
 Date: March 2026
@@ -25,9 +26,8 @@ from typing import List, Optional
 
 # --- Frame constants ---
 
-FRAME_START = 0x7E
-FRAME_END = 0x7F
-MAX_PAYLOAD_SIZE = 255
+MAX_PAYLOAD_SIZE = 8192
+MAX_FRAME_SIZE = MAX_PAYLOAD_SIZE + 256  # payload + COBS overhead + header
 
 
 # --- Message types from Interface Specification v0.2 ---
@@ -100,57 +100,118 @@ def capabilities_to_list(bitmask: int) -> List[str]:
 
 
 # ---------------------------------------------------------------------------
+# COBS encode / decode (inline — no external dependency)
+# ---------------------------------------------------------------------------
+
+def _cobs_encode(data: bytes) -> bytes:
+    """COBS encode: guarantees no 0x00 bytes in output."""
+    output = bytearray()
+    idx = 0
+
+    while idx <= len(data):
+        # Find next zero byte (or end of data)
+        next_zero = data.find(b'\x00', idx)
+        if next_zero == -1:
+            next_zero = len(data)
+
+        block_len = next_zero - idx
+
+        # Handle blocks > 253 bytes (need to split with 0xFF code)
+        while block_len > 253:
+            output.append(0xFF)
+            output.extend(data[idx:idx + 254])
+            idx += 254
+            block_len -= 254
+
+        # Write code byte + block
+        output.append(block_len + 1)
+        output.extend(data[idx:idx + block_len])
+        idx += block_len
+
+        # Skip past the zero byte (if one exists)
+        if idx < len(data) and data[idx] == 0:
+            idx += 1
+        else:
+            break
+
+    return bytes(output)
+
+
+def _cobs_decode(data: bytes) -> bytes:
+    """COBS decode: inverse of _cobs_encode."""
+    output = bytearray()
+    idx = 0
+
+    while idx < len(data):
+        code = data[idx]
+        idx += 1
+
+        if code == 0:
+            raise ValueError("Unexpected zero in COBS data")
+
+        # Read code-1 data bytes
+        end = idx + code - 1
+        if end > len(data):
+            raise ValueError("COBS data truncated")
+        output.extend(data[idx:end])
+        idx = end
+
+        # If code < 0xFF and more data follows, insert implicit zero
+        if code < 0xFF and idx < len(data):
+            output.append(0)
+
+    return bytes(output)
+
+
+# ---------------------------------------------------------------------------
 # Low-level frame operations
 # ---------------------------------------------------------------------------
 
 def calculate_crc(msg_type: int, payload: bytes) -> int:
-    """Calculate CRC-8 (XOR of type, length, and all payload bytes)."""
-    crc = msg_type ^ len(payload)
+    """Calculate CRC-8 (XOR of type and all payload bytes)."""
+    crc = msg_type
     for b in payload:
         crc ^= b
     return crc & 0xFF
 
 
 def build_frame(msg_type: int, payload: bytes) -> bytes:
-    """Build a complete binary frame from message type and payload."""
+    """Build a complete COBS-framed binary frame from message type and payload.
+
+    Wire format: [LEN_HI][LEN_LO][COBS data][0x00]
+    """
     if len(payload) > MAX_PAYLOAD_SIZE:
         raise ValueError(
             f"Payload too large: {len(payload)} bytes (max {MAX_PAYLOAD_SIZE})"
         )
+
+    # Build raw block: [TYPE] [PAYLOAD] [CRC]
     crc = calculate_crc(msg_type, payload)
-    return bytes([
-        FRAME_START,
-        msg_type,
-        len(payload),
-        *payload,
-        crc,
-        FRAME_END,
-    ])
+    raw = bytes([msg_type]) + payload + bytes([crc])
+
+    # COBS encode (no zeros in output)
+    encoded = _cobs_encode(raw)
+
+    # Length prefix (big-endian u16) + encoded + 0x00 terminator
+    length = len(encoded)
+    return struct.pack('>H', length) + encoded + b'\x00'
 
 
-def validate_frame(frame: bytes) -> tuple:
-    """Validate and extract (msg_type, payload) from a complete frame.
+def validate_frame(cobs_data: bytes) -> tuple:
+    """Validate and extract (msg_type, payload) from COBS-encoded data.
 
+    Input is the COBS-encoded block (without length prefix or terminator).
     Returns (msg_type, payload) on success, raises ValueError on failure.
     """
-    if len(frame) < 5:
-        raise ValueError(f"Frame too short: {len(frame)} bytes")
-    if frame[0] != FRAME_START:
-        raise ValueError(f"Invalid start byte: 0x{frame[0]:02X}")
-    if frame[-1] != FRAME_END:
-        raise ValueError(f"Invalid end byte: 0x{frame[-1]:02X}")
+    # COBS decode
+    raw = _cobs_decode(cobs_data)
 
-    msg_type = frame[1]
-    payload_len = frame[2]
-    expected_len = payload_len + 5  # start + type + len + payload + crc + end
+    if len(raw) < 2:
+        raise ValueError(f"Decoded frame too short: {len(raw)} bytes")
 
-    if len(frame) != expected_len:
-        raise ValueError(
-            f"Frame length mismatch: expected {expected_len}, got {len(frame)}"
-        )
-
-    payload = frame[3:3 + payload_len]
-    received_crc = frame[3 + payload_len]
+    msg_type = raw[0]
+    payload = raw[1:-1]
+    received_crc = raw[-1]
     expected_crc = calculate_crc(msg_type, payload)
 
     if received_crc != expected_crc:
@@ -167,53 +228,63 @@ def validate_frame(frame: bytes) -> tuple:
 # ---------------------------------------------------------------------------
 
 class FrameParser:
-    """Streaming frame parser — feed bytes, get decoded frames.
+    """Streaming COBS frame parser — feed bytes, get decoded frames.
 
-    Handles partial reads, noise between frames, and buffer overflow.
+    State machine:
+      WAIT_LEN_HI -> WAIT_LEN_LO -> READING -> WAIT_TERM
     """
 
     def __init__(self):
+        self._state = 'WAIT_LEN_HI'
+        self._len_hi = 0
+        self._expected_len = 0
         self._buf = bytearray()
-        self._in_frame = False
         self.frames_received = 0
         self.crc_errors = 0
 
     def feed(self, data: bytes) -> list:
-        """Feed raw bytes from serial port, return list of (msg_type, payload).
-
-        Silently skips noise between frames and logs CRC errors.
-        """
+        """Feed raw bytes from serial port, return list of (msg_type, payload)."""
         results = []
 
         for byte in data:
-            if byte == FRAME_START:
-                self._buf.clear()
-                self._buf.append(byte)
-                self._in_frame = True
-            elif self._in_frame:
-                self._buf.append(byte)
+            if self._state == 'WAIT_LEN_HI':
+                self._len_hi = byte
+                self._state = 'WAIT_LEN_LO'
 
-                if byte == FRAME_END:
-                    self._in_frame = False
+            elif self._state == 'WAIT_LEN_LO':
+                self._expected_len = (self._len_hi << 8) | byte
+                if self._expected_len == 0 or self._expected_len > MAX_FRAME_SIZE:
+                    # Invalid length — resync
+                    self._state = 'WAIT_LEN_HI'
+                    continue
+                self._buf.clear()
+                self._state = 'READING'
+
+            elif self._state == 'READING':
+                self._buf.append(byte)
+                if len(self._buf) >= self._expected_len:
+                    self._state = 'WAIT_TERM'
+
+            elif self._state == 'WAIT_TERM':
+                if byte == 0x00:
+                    # Got complete frame — validate
                     try:
                         msg_type, payload = validate_frame(bytes(self._buf))
                         self.frames_received += 1
                         results.append((msg_type, payload))
                     except ValueError:
                         self.crc_errors += 1
-                    self._buf.clear()
-
-                # Prevent buffer overflow from malformed data
-                if len(self._buf) > MAX_PAYLOAD_SIZE + 5:
-                    self._buf.clear()
-                    self._in_frame = False
+                else:
+                    # Missing terminator — corrupted frame
+                    self.crc_errors += 1
+                self._state = 'WAIT_LEN_HI'
 
         return results
 
     def reset(self):
         """Reset parser state."""
         self._buf.clear()
-        self._in_frame = False
+        self._state = 'WAIT_LEN_HI'
 
 
 # ---------------------------------------------------------------------------

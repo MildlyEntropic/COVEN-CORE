@@ -172,6 +172,7 @@ pub struct BatteryConfig {
 /// - Frame format: [0x7E] [TYPE] [LEN] [PAYLOAD] [CRC] [0x7F]
 /// - Physical layer: UART via 9-pin connector pins 7/8 (ID/Sense lines)
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct DockUartConfig {
     /// Serial port device path for dock communication.
     /// This is the UART connected to the 9-pin dock connector.

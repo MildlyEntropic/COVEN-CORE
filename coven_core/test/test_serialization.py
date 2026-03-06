@@ -35,7 +35,6 @@ from coven_core.common import (
     CoverageGoal, CoverageStatus, BatteryConfig, CoverageConfig,
     Sector, CoverageMissionComplete,
     # Dock-centric messages
-    SimplifiedModuleState,
     RoverRegistration, RoverRegistrationAck,
     SensorData, VelocityCommand,
     RoverStatus, DockCommand,
@@ -661,13 +660,6 @@ class TestCoverageMessages(unittest.TestCase):
 
 class TestDockCentricMessages(unittest.TestCase):
     """Test dock-centric architecture message serialization."""
-
-    def test_simplified_module_state_enum(self):
-        """SimplifiedModuleState: enum has expected values."""
-        self.assertEqual(SimplifiedModuleState.BOOT.value, 0)
-        self.assertEqual(SimplifiedModuleState.READY.value, 1)
-        self.assertEqual(SimplifiedModuleState.ACTIVE.value, 2)
-        self.assertEqual(SimplifiedModuleState.ERROR.value, 3)
 
     def test_rover_registration_roundtrip(self):
         """RoverRegistration: encode → decode produces identical object."""

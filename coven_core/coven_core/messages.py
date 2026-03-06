@@ -381,7 +381,7 @@ class RoverStatus:
     """
 
     module_id: str
-    state: str = "READY"                 # SimplifiedModuleState as string
+    state: str = "READY"                 # e.g. "READY", "ACTIVE", "ERROR"
     battery_level: float = 1.0
     is_moving: bool = False              # Currently executing velocity
     last_cmd_age: float = 0.0            # Seconds since last velocity command

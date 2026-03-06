@@ -83,10 +83,14 @@ pub struct EncoderReader {
     wheel_base: f64,
     /// Distance traveled per encoder tick in meters.
     meters_per_tick: f64,
-    /// Last recorded left wheel ticks.
+    /// Last recorded left wheel ticks (for odometry).
     last_left_ticks: i64,
-    /// Last recorded right wheel ticks.
+    /// Last recorded right wheel ticks (for odometry).
     last_right_ticks: i64,
+    /// Last recorded left wheel ticks (for raw delta collection).
+    last_delta_left_ticks: i64,
+    /// Last recorded right wheel ticks (for raw delta collection).
+    last_delta_right_ticks: i64,
     /// Timestamp of last update.
     last_time: Instant,
     /// Current odometry state.
@@ -150,6 +154,8 @@ impl EncoderReader {
             meters_per_tick,
             last_left_ticks: 0,
             last_right_ticks: 0,
+            last_delta_left_ticks: 0,
+            last_delta_right_ticks: 0,
             last_time: Instant::now(),
             odometry: Odometry::default(),
         })
@@ -293,6 +299,8 @@ impl EncoderReader {
         self.right.ticks.store(0, Ordering::Relaxed);
         self.last_left_ticks = 0;
         self.last_right_ticks = 0;
+        self.last_delta_left_ticks = 0;
+        self.last_delta_right_ticks = 0;
         self.odometry = Odometry::default();
     }
 
@@ -365,14 +373,16 @@ impl EncoderReader {
     /// Get delta ticks since last call (for raw data collection).
     ///
     /// Returns (left_delta, right_delta) and resets the delta counters.
+    /// Uses separate tracking from `update()` so both can be called
+    /// independently without consuming each other's deltas.
     pub fn get_delta_ticks(&mut self) -> (i32, i32) {
         let (left_ticks, right_ticks) = self.get_ticks();
 
-        let delta_left = (left_ticks - self.last_left_ticks) as i32;
-        let delta_right = (right_ticks - self.last_right_ticks) as i32;
+        let delta_left = (left_ticks - self.last_delta_left_ticks) as i32;
+        let delta_right = (right_ticks - self.last_delta_right_ticks) as i32;
 
-        self.last_left_ticks = left_ticks;
-        self.last_right_ticks = right_ticks;
+        self.last_delta_left_ticks = left_ticks;
+        self.last_delta_right_ticks = right_ticks;
 
         (delta_left, delta_right)
     }

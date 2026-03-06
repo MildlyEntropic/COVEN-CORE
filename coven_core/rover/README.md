@@ -40,9 +40,10 @@ Specification v0.2:
 
 ### Protocol Reference
 
-See: `COVEN Interface Specification v0.2`
+See: `COVEN Interface Specification v0.3`
 - Document: `20250808.ShultisAnder.COVEN.CAD.InterfaceSpec.pdf`
-- Frame format: `[0x7E] [TYPE] [LEN] [PAYLOAD] [CRC] [0x7F]`
+- Frame format: `[LEN_HI] [LEN_LO] [COBS-encoded data] [0x00]`
+- COBS data encodes: `[TYPE] [PAYLOAD] [CRC]`
 - Physical layer: UART @ 115200 baud via 9-pin connector
 
 ## Building
@@ -104,7 +105,7 @@ right_in2 = 26
 standby = 17
 pwm_frequency = 1000.0
 wheel_base = 0.298
-wheel_radius = 0.08
+wheel_radius = 0.1
 max_rpm = 100.0
 
 [hardware.encoders]
@@ -112,7 +113,7 @@ left_a = 23
 left_b = 24
 right_a = 27
 right_b = 22
-pulses_per_rev = 210
+pulses_per_rev = 408
 
 [hardware.lidar]
 port = "/dev/ydlidar"

@@ -25,8 +25,8 @@ Author: Alexander Shultis
 Date: January 2026
 """
 
-import asyncio
 import math
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -272,7 +272,7 @@ class TaskAuctioneer:
 
         # Current auction
         self.current_auction: Optional[Mission] = None
-        self.auction_lock = asyncio.Lock()
+        self.auction_lock = threading.Lock()
 
         # Callbacks
         self._send_task_callback: Optional[callable] = None
@@ -370,12 +370,12 @@ class TaskAuctioneer:
             if r.status == RoverStatus.IDLE
         ]
 
-    async def try_dispatch(self) -> bool:
+    def try_dispatch(self) -> bool:
         """
         Attempt to dispatch next mission to an available rover.
         Returns True if a mission was dispatched.
         """
-        async with self.auction_lock:
+        with self.auction_lock:
             # Check preconditions
             if not self.mission_queue:
                 return False
@@ -388,7 +388,7 @@ class TaskAuctioneer:
             mission = self.mission_queue[0]
 
             # Run auction
-            winner = await self._run_auction(mission, idle_rovers)
+            winner = self._run_auction(mission, idle_rovers)
 
             if winner is None:
                 mission.auction_attempts += 1
@@ -424,7 +424,7 @@ class TaskAuctioneer:
             # Send TASK_REQ
             if self._send_task_callback:
                 task_req = mission.to_task_req(self.dock_id)
-                await self._send_task_callback(winner.module_id, task_req)
+                self._send_task_callback(winner.module_id, task_req)
 
             logger.info(
                 f"Mission {mission.mission_id} assigned to {winner.module_id} "
@@ -432,7 +432,7 @@ class TaskAuctioneer:
             )
             return True
 
-    async def _run_auction(
+    def _run_auction(
         self,
         mission: Mission,
         bidders: List[RoverInfo]

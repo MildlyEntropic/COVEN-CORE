@@ -1,11 +1,10 @@
 """
-test_dock_centric.py - Unit tests for dock-centric architecture components
+test_dock_centric.py - Unit tests for dock-centric message types
 
-Tests the new dock-centric components:
-- SimplifiedModuleState enum
-- SensorPublisher (without ROS runtime)
-- VelocityExecutor (without ROS runtime)
-- Message encoding/decoding for dock-centric messages
+Tests message encoding/decoding for dock-centric messages:
+- RoverRegistration / RoverRegistrationAck
+- SensorData, VelocityCommand
+- RoverStatus, DockCommand
 
 Author: Alexander Shultis
 Date: December 2025
@@ -16,7 +15,6 @@ from unittest.mock import MagicMock, patch
 import math
 
 from coven_core.common import (
-    SimplifiedModuleState,
     RoverRegistration, RoverRegistrationAck,
     SensorData, VelocityCommand,
     RoverStatus, DockCommand,
@@ -26,28 +24,6 @@ from coven_core.common import (
     rover_status_encode, rover_status_decode,
 )
 from coven_core.serialization import encode, decode
-
-
-class TestSimplifiedModuleState(unittest.TestCase):
-    """Test SimplifiedModuleState enum."""
-
-    def test_state_values(self):
-        """SimplifiedModuleState has correct values."""
-        self.assertEqual(SimplifiedModuleState.BOOT.value, 0)
-        self.assertEqual(SimplifiedModuleState.READY.value, 1)
-        self.assertEqual(SimplifiedModuleState.ACTIVE.value, 2)
-        self.assertEqual(SimplifiedModuleState.ERROR.value, 3)
-
-    def test_state_names(self):
-        """SimplifiedModuleState has correct names."""
-        self.assertEqual(SimplifiedModuleState.BOOT.name, "BOOT")
-        self.assertEqual(SimplifiedModuleState.READY.name, "READY")
-        self.assertEqual(SimplifiedModuleState.ACTIVE.name, "ACTIVE")
-        self.assertEqual(SimplifiedModuleState.ERROR.name, "ERROR")
-
-    def test_state_count(self):
-        """SimplifiedModuleState has exactly 4 states."""
-        self.assertEqual(len(SimplifiedModuleState), 4)
 
 
 class TestRoverRegistrationMessages(unittest.TestCase):

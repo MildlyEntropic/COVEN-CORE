@@ -531,12 +531,18 @@ impl RoverStateMachine {
                 self.transition_to(RoverState::WaitVerify);
             }
 
-            DockMessage::VerifyReq { dock_id, module_id } => {
+            DockMessage::VerifyReq { dock_id, module_id, accepted } => {
                 if module_id != self.module_id() {
                     return Ok(()); // Not for us
                 }
 
-                info!(dock_id = %dock_id, module_id = %module_id, "Received VERIFY_REQ");
+                info!(dock_id = %dock_id, module_id = %module_id, accepted = accepted, "Received VERIFY_REQ");
+
+                if !accepted {
+                    warn!("Dock rejected verification for {}", module_id);
+                    self.transition_to(RoverState::Rejected);
+                    return Ok(());
+                }
 
                 // Run self-checks
                 let (success, failed_checks) = self.run_self_checks();

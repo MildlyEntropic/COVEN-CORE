@@ -39,13 +39,13 @@
 mod config;
 mod diagnostics;
 mod dock_uart;
-mod error;
 mod hardware;
 mod lidar;
 mod mock;
 mod navigation;
 mod protocol;
 mod state;
+mod subsumption;
 mod utils;
 
 // ------------------------
@@ -684,13 +684,21 @@ async fn run_mock_mode(config: RoverConfig, mut dock: DockUart) -> Result<()> {
                 DockMessage::VerifyReq {
                     dock_id,
                     module_id: recv_id,
+                    accepted,
                 } => {
                     let my_id = module_id(&assigned_name);
                     if recv_id != my_id {
                         continue;
                     }
 
-                    info!(dock_id = %dock_id, module_id = %my_id, "Received VERIFY_REQ");
+                    info!(dock_id = %dock_id, module_id = %my_id, accepted = accepted, "Received VERIFY_REQ");
+
+                    if !accepted {
+                        warn!("Dock rejected verification");
+                        state = RoverState::Rejected;
+                        info!("State -> Rejected");
+                        continue;
+                    }
 
                     let reply = RoverMessage::VerifyRep {
                         module_id: my_id,

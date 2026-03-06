@@ -44,8 +44,6 @@ pub enum HardwareComponent {
     Encoder,
     /// YDLiDAR X4.
     Lidar,
-    /// TCP network connection.
-    Network,
 }
 
 impl HardwareComponent {
@@ -60,7 +58,6 @@ impl HardwareComponent {
             Self::Motor => "MOTOR DRIVER",
             Self::Encoder => "ENCODER",
             Self::Lidar => "LIDAR",
-            Self::Network => "NETWORK",
         }
     }
 
@@ -110,12 +107,6 @@ impl HardwareComponent {
                 "Verify LiDAR has power (should spin on startup)",
                 "Check serial port permissions",
                 "Try unplugging and reconnecting USB",
-            ],
-            Self::Network => &[
-                "Check network connectivity: ping dock_ip",
-                "Verify firewall allows connection: sudo ufw status",
-                "Check dock service is running",
-                "Verify port is correct in config",
             ],
         }
     }
@@ -175,19 +166,3 @@ fn log_hints(component: HardwareComponent) {
     }
 }
 
-/// Log a connection failure with retry information.
-#[allow(dead_code)]
-pub fn log_connection_failure<E: Display>(
-    target: &str,
-    port: u16,
-    error: &E,
-    attempt: u32,
-    retry_delay_secs: f64,
-) {
-    error!("!!! DOCK CONNECTION FAILED !!!");
-    error!("  Error: {}", error);
-    error!("  Target: {}:{}", target, port);
-    error!("  Attempt: #{}", attempt);
-    log_hints(HardwareComponent::Network);
-    error!("  Retrying in {:.1}s...", retry_delay_secs);
-}

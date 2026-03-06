@@ -266,7 +266,12 @@ class FrontierDispatcher(Node):
         if data.get('status') == 'complete':
             self.get_logger().info('[Dispatcher] SLAM update complete, analyzing frontiers...')
             # Give time for map to be published AND rover to transition to IDLE
-            self.create_timer(4.0, self._dispatch_all_idle_rovers)
+            # Cancel any previous one-shot timer to avoid accumulation
+            if hasattr(self, '_slam_dispatch_timer') and self._slam_dispatch_timer is not None:
+                self._slam_dispatch_timer.cancel()
+            self._slam_dispatch_timer = self.create_timer(
+                4.0, self._slam_dispatch_once
+            )
 
     def _auctioneer_status_callback(self, msg: String):
         """Track rover availability from the auctioneer."""
@@ -339,6 +344,13 @@ class FrontierDispatcher(Node):
         Legacy single-dispatch method - use _dispatch_all_idle_rovers for parallel dispatch.
         """
         self._dispatch_all_idle_rovers(max_dispatches=1)
+
+    def _slam_dispatch_once(self):
+        """One-shot callback after SLAM completion — dispatch then cancel timer."""
+        self._dispatch_all_idle_rovers()
+        if hasattr(self, '_slam_dispatch_timer') and self._slam_dispatch_timer is not None:
+            self._slam_dispatch_timer.cancel()
+            self._slam_dispatch_timer = None
 
     def _dispatch_all_idle_rovers(self, max_dispatches: int = 0):
         """Send ALL available idle rovers to frontiers in parallel.

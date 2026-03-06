@@ -82,7 +82,7 @@ class TopicManager:
                 module_id, odom = self.odom_queue.get_nowait()
                 if module_id in self.odom_pubs:
                     self.odom_pubs[module_id].publish(odom)
-            except:
+            except Exception:
                 break
 
         while not self.scan_queue.empty():
@@ -90,14 +90,14 @@ class TopicManager:
                 module_id, scan = self.scan_queue.get_nowait()
                 if module_id in self.scan_pubs:
                     self.scan_pubs[module_id].publish(scan)
-            except:
+            except Exception:
                 break
 
         while not self.tf_queue.empty():
             try:
                 transform = self.tf_queue.get_nowait()
                 self.tf_broadcaster.sendTransform(transform)
-            except:
+            except Exception:
                 break
 
     def publish_odom_threadsafe(self, module_id: str, odom: Odometry):
