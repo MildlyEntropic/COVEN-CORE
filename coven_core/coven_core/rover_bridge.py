@@ -1,13 +1,14 @@
 """
 rover_bridge.py — COVEN Rover Bridge
 
-Bridges Rust rovers to the ROS2 ecosystem via UART (9-pin connector).
+Bridges Rust rovers to the ROS2 ecosystem via serial UART.
 Handles the COVEN handshake protocol and translates between:
-- Rover sensor data (UART) → ROS2 topics (LaserScan, Odometry)
-- ROS2 cmd_vel → UART velocity commands to rover
+- Rover sensor data (UART) -> ROS2 topics (LaserScan, Odometry)
+- ROS2 cmd_vel -> UART velocity commands to rover
 
-This node runs on the dock and manages connections from rovers that
-physically dock via the COVEN Type-A 9-pin connector. NO wireless.
+This node runs on the dock and manages the serial connection to a
+rover that physically docks via USB (MVP) or the COVEN 9-pin
+connector (production). NO wireless.
 
 Protocol handling lives in bridge_protocol.py; batch processing in
 bridge_data.py; per-rover topic management in bridge_topics.py.
@@ -16,7 +17,7 @@ Author: Alexander Shultis
 Date: January 2025
 """
 
-import asyncio
+import glob
 import json
 import math
 import os
@@ -26,6 +27,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Dict, Optional, List
+
+import serial
 
 import rclpy
 from rclpy.node import Node
@@ -44,14 +47,25 @@ from coven_core.task_auctioneer import (
 from coven_core.bridge_topics import TopicManager
 from coven_core.bridge_protocol import ProtocolHandler
 from coven_core.bridge_data import DataBatchProcessor
+from coven_core.frame_codec import (
+    FrameParser,
+    decode_message,
+    encode_identify_request,
+    encode_verify_ok,
+    encode_verify_fail,
+    encode_task_request,
+    encode_cmd_vel,
+)
 
 
 # Configuration
-DEFAULT_PORT = 5555
+DEFAULT_SERIAL_PORT = 'auto'  # Auto-detect: scans /dev/ttyACM* and /dev/ttyUSB*
+DEFAULT_BAUD_RATE = 115200
 HEARTBEAT_TIMEOUT = 5.0
 CMD_VEL_TIMEOUT = 0.5
 MISSION_TIMEOUT_FACTOR = 5.0
 DEFAULT_NAMESPACE_HOLD_TIME = 300.0
+SERIAL_RETRY_DELAY = 2.0  # seconds between serial reconnect attempts
 
 
 class RoverState(Enum):
@@ -67,8 +81,6 @@ class RoverState(Enum):
 class ConnectedRover:
     """State for a connected rover."""
     module_id: str
-    writer: asyncio.StreamWriter
-    reader: asyncio.StreamReader
     state: RoverState = RoverState.CONNECTING
     module_type: str = "unknown"
     firmware: str = "unknown"
@@ -76,6 +88,7 @@ class ConnectedRover:
     last_heartbeat: float = field(default_factory=time.time)
     last_odom: Optional[Odometry] = None
     last_scan: Optional[LaserScan] = None
+    capabilities: int = 0  # Bitmask from frame_codec CAP_* constants
     # Position tracking
     x: float = 0.0
     y: float = 0.0
@@ -102,14 +115,16 @@ class RoverBridge(Node):
         super().__init__('rover_bridge')
 
         # Parameters
-        self.declare_parameter('port', DEFAULT_PORT)
+        self.declare_parameter('serial_port', DEFAULT_SERIAL_PORT)
+        self.declare_parameter('baud_rate', DEFAULT_BAUD_RATE)
         self.declare_parameter('dock_id', '')
         self.declare_parameter('coven_name', '')
         self.declare_parameter('dock_x', 0.0)
         self.declare_parameter('dock_y', 0.0)
         self.declare_parameter('data_base_dir', os.path.expanduser('~/Desktop/COVEN/Data'))
 
-        self.port = self.get_parameter('port').value
+        self.serial_port_path = self.get_parameter('serial_port').value
+        self.baud_rate = self.get_parameter('baud_rate').value
         self.dock_id = self.get_parameter('dock_id').value or f"dock_{id(self) % 10000:04d}"
         self.coven_name = self.get_parameter('coven_name').value or get_coven_name()
         self.dock_x = self.get_parameter('dock_x').value
@@ -128,6 +143,12 @@ class RoverBridge(Node):
         # Connected rovers
         self.rovers: Dict[str, ConnectedRover] = {}
         self.rovers_lock = threading.Lock()
+
+        # Serial port state
+        self._serial: Optional[serial.Serial] = None
+        self._serial_lock = threading.Lock()
+        self._frame_parser = FrameParser()
+        self._running = True
 
         # QoS profiles
         self.sensor_qos = QoSProfile(
@@ -179,102 +200,146 @@ class RoverBridge(Node):
         self.create_timer(2.0, self._try_dispatch_missions)
         self.create_timer(5.0, self._publish_auctioneer_status)
 
-        # Async event loop for TCP server
-        self.loop: Optional[asyncio.AbstractEventLoop] = None
-        self.server_task: Optional[asyncio.Task] = None
-
-        # Start TCP server in background thread
-        self.tcp_thread = threading.Thread(target=self._run_tcp_server, daemon=True)
-        self.tcp_thread.start()
+        # Start serial reader in background thread
+        self._serial_thread = threading.Thread(
+            target=self._serial_loop, daemon=True
+        )
+        self._serial_thread.start()
 
         self.get_logger().info(
-            f"RoverBridge started - Dock: {self.dock_id}, Coven: {self.coven_name}, Port: {self.port}"
+            f"RoverBridge started — Dock: {self.dock_id}, "
+            f"Coven: {self.coven_name}, Port: {self.serial_port_path}"
         )
 
     # -------------------------------------------------------------------------
-    # TCP Server
+    # Serial Communication
     # -------------------------------------------------------------------------
 
-    def _run_tcp_server(self):
-        """Run the async TCP server in a dedicated thread."""
-        self.loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self.loop)
+    def _serial_loop(self):
+        """Background thread: open serial port, read frames, dispatch."""
+        while self._running:
+            try:
+                self._open_serial()
+                if self._serial and self._serial.is_open:
+                    self._handle_serial_connection()
+            except Exception as e:
+                self.get_logger().error(f"Serial error: {e}")
+
+            # Clean up any connected rover on disconnect
+            self._handle_serial_disconnect()
+
+            if self._running:
+                self.get_logger().info(
+                    f"Retrying serial in {SERIAL_RETRY_DELAY}s..."
+                )
+                time.sleep(SERIAL_RETRY_DELAY)
+
+    def _detect_serial_port(self) -> Optional[str]:
+        """Scan for available serial ports (ACM for Pi Zero, USB for Arduino)."""
+        candidates = sorted(
+            glob.glob('/dev/ttyACM*') + glob.glob('/dev/ttyUSB*')
+        )
+        if candidates:
+            return candidates[0]
+        return None
+
+    def _open_serial(self):
+        """Try to open the serial port (auto-detect if configured)."""
+        port = self.serial_port_path
+        if port == 'auto':
+            port = self._detect_serial_port()
+            if not port:
+                self.get_logger().debug("No serial devices found")
+                time.sleep(SERIAL_RETRY_DELAY)
+                return
 
         try:
-            self.loop.run_until_complete(self._start_server())
-        except Exception as e:
-            self.get_logger().error(f"TCP server error: {e}")
-        finally:
-            self.loop.close()
+            self._serial = serial.Serial(
+                port=port,
+                baudrate=self.baud_rate,
+                timeout=0.1,  # 100ms read timeout for non-blocking
+            )
+            self._frame_parser.reset()
+            self.get_logger().info(
+                f"Serial port opened: {port} @ {self.baud_rate}"
+            )
+        except serial.SerialException as e:
+            self._serial = None
+            self.get_logger().debug(
+                f"Serial port not available: {port} ({e})"
+            )
+            time.sleep(SERIAL_RETRY_DELAY)
 
-    async def _start_server(self):
-        """Start the TCP server."""
-        server = await asyncio.start_server(
-            self._handle_client,
-            '0.0.0.0',
-            self.port
-        )
-
-        addr = server.sockets[0].getsockname()
-        self.get_logger().info(f"TCP server listening on {addr}")
-
-        async with server:
-            await server.serve_forever()
-
-    async def _handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
-        """Handle a new rover connection."""
-        addr = writer.get_extra_info('peername')
-        self.get_logger().info(f"New connection from {addr}")
-
+    def _handle_serial_connection(self):
+        """Handle an open serial connection — read frames, dispatch."""
+        # Create a pending rover for this connection
         rover = ConnectedRover(
             module_id="pending",
-            writer=writer,
-            reader=reader,
-            state=RoverState.CONNECTING
+            state=RoverState.CONNECTING,
         )
 
-        try:
-            await self._send_message(
-                rover,
-                f"IDENTIFY_REQ:{self.dock_id}:{self.coven_name}:"
-            )
+        # Send IDENTIFY_REQUEST to start handshake
+        self.send_frame(
+            encode_identify_request(self.dock_id, self.coven_name)
+        )
 
-            while True:
+        while self._running and self._serial and self._serial.is_open:
+            try:
+                data = self._serial.read(256)
+                if not data:
+                    continue
+
+                frames = self._frame_parser.feed(data)
+                for msg_type, payload in frames:
+                    decoded = decode_message(msg_type, payload)
+                    if decoded:
+                        self.protocol.process_message(rover, decoded)
+                        # Update rover reference if identity changed
+                        with self.rovers_lock:
+                            if rover.module_id in self.rovers:
+                                rover = self.rovers[rover.module_id]
+
+            except serial.SerialException as e:
+                self.get_logger().warn(f"Serial read error: {e}")
+                break
+            except Exception as e:
+                self.get_logger().error(f"Frame processing error: {e}")
+
+    def _handle_serial_disconnect(self):
+        """Clean up when serial connection drops."""
+        with self._serial_lock:
+            if self._serial:
                 try:
-                    line = await asyncio.wait_for(reader.readline(), timeout=HEARTBEAT_TIMEOUT * 2)
-                    if not line:
-                        break
+                    self._serial.close()
+                except Exception:
+                    pass
+                self._serial = None
 
-                    message = line.decode('utf-8').strip()
-                    if message:
-                        await self.protocol.process_message(rover, message)
+        # Disconnect all rovers (there should be at most one)
+        with self.rovers_lock:
+            rover_ids = list(self.rovers.keys())
 
-                except asyncio.TimeoutError:
-                    self.get_logger().warn(f"Timeout waiting for data from {rover.module_id}")
-                    break
+        for module_id in rover_ids:
+            with self.rovers_lock:
+                rover = self.rovers.get(module_id)
+            if rover:
+                self._disconnect_rover(rover)
 
-        except Exception as e:
-            self.get_logger().error(f"Error handling {rover.module_id}: {e}")
-
-        finally:
-            await self._disconnect_rover(rover)
-            writer.close()
-            await writer.wait_closed()
-
-    async def _send_message(self, rover: ConnectedRover, message: str):
-        """Send a message to a rover."""
-        try:
-            rover.writer.write((message + "\n").encode('utf-8'))
-            await rover.writer.drain()
-            self.get_logger().debug(f"Sent to {rover.module_id}: {message[:100]}...")
-        except Exception as e:
-            self.get_logger().error(f"Failed to send to {rover.module_id}: {e}")
+    def send_frame(self, frame: bytes):
+        """Send a pre-built binary frame over serial."""
+        with self._serial_lock:
+            if self._serial and self._serial.is_open:
+                try:
+                    self._serial.write(frame)
+                    self._serial.flush()
+                except serial.SerialException as e:
+                    self.get_logger().error(f"Serial write error: {e}")
 
     # -------------------------------------------------------------------------
     # Connection Lifecycle
     # -------------------------------------------------------------------------
 
-    async def _disconnect_rover(self, rover: ConnectedRover):
+    def _disconnect_rover(self, rover: ConnectedRover):
         """Clean up a disconnected rover."""
         self.get_logger().info(f"Rover {rover.module_id} disconnected")
 
@@ -373,7 +438,7 @@ class RoverBridge(Node):
     # -------------------------------------------------------------------------
 
     async def _send_task_from_auctioneer(self, module_id: str, task_req: dict):
-        """Callback from auctioneer to send TASK_REQ to a rover."""
+        """Callback from auctioneer to send TASK_REQ to a rover (async for auctioneer compat)."""
         with self.rovers_lock:
             rover = self.rovers.get(module_id)
             if not rover or rover.state != RoverState.ACTIVE:
@@ -407,10 +472,10 @@ class RoverBridge(Node):
             f"timeout will be {(estimated_path / rover.mission_max_speed_mps) * MISSION_TIMEOUT_FACTOR:.0f}s"
         )
 
-        task_json = json.dumps(task_req)
-        cmd = f"TASK_REQ:{self.dock_id}:{task_id}:{task_json}"
-
-        await self._send_message(rover, cmd)
+        # Build and send task as binary frame
+        task_req["dock_id"] = self.dock_id
+        task_req["module_id"] = module_id
+        self.send_frame(encode_task_request(task_req))
         self.get_logger().info(f"Sent TASK_REQ to {module_id}: {task_id}")
 
     def _on_mission_complete(self, mission: Mission, success: bool):
@@ -422,6 +487,8 @@ class RoverBridge(Node):
 
     def _try_dispatch_missions(self):
         """Timer callback to try dispatching missions from queue."""
+        import asyncio
+
         if not self.auctioneer.mission_queue:
             return
 
@@ -429,11 +496,15 @@ class RoverBridge(Node):
         if idle_count == 0:
             return
 
-        if self.loop and self.loop.is_running():
-            asyncio.run_coroutine_threadsafe(
-                self.auctioneer.try_dispatch(),
-                self.loop
-            )
+        try:
+            asyncio.run(self.auctioneer.try_dispatch())
+        except RuntimeError:
+            # Event loop already running — use a new thread
+            loop = asyncio.new_event_loop()
+            try:
+                loop.run_until_complete(self.auctioneer.try_dispatch())
+            finally:
+                loop.close()
 
     def _publish_auctioneer_status(self):
         """Publish auctioneer status for monitoring."""
@@ -501,16 +572,22 @@ class RoverBridge(Node):
                 self.get_logger().error(f"Cannot send task to {module_id}: not active")
                 return False
 
-        task_json = json.dumps(task_data)
-        cmd = f"TASK_REQ:{self.dock_id}:{task_id}:{task_json}"
+        task_data["dock_id"] = self.dock_id
+        task_data["task_id"] = task_id
+        task_data["module_id"] = module_id
+        self.send_frame(encode_task_request(task_data))
+        return True
 
-        if self.loop and self.loop.is_running():
-            asyncio.run_coroutine_threadsafe(
-                self._send_message(rover, cmd),
-                self.loop
-            )
-            return True
-        return False
+    def destroy_node(self):
+        """Clean shutdown."""
+        self._running = False
+        with self._serial_lock:
+            if self._serial:
+                try:
+                    self._serial.close()
+                except Exception:
+                    pass
+        super().destroy_node()
 
 
 # Main

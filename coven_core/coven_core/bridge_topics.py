@@ -131,8 +131,8 @@ class TopicManager:
         self.publish_tf_threadsafe(t)
 
     def _cmd_vel_callback(self, module_id: str, msg: Twist):
-        """Handle cmd_vel from ROS2, forward to rover."""
-        import asyncio
+        """Handle cmd_vel from ROS2, forward to rover as binary frame."""
+        from coven_core.frame_codec import encode_cmd_vel
 
         with self._bridge.rovers_lock:
             rover = self._bridge.rovers.get(module_id)
@@ -142,10 +142,6 @@ class TopicManager:
             if rover.state != RoverState.ACTIVE:
                 return
 
-        cmd = f"CMD_VEL:{msg.linear.x:.4f}:{msg.angular.z:.4f}"
-
-        if self._bridge.loop and self._bridge.loop.is_running():
-            asyncio.run_coroutine_threadsafe(
-                self._bridge._send_message(rover, cmd),
-                self._bridge.loop
-            )
+        self._bridge.send_frame(
+            encode_cmd_vel(msg.linear.x, msg.angular.z)
+        )

@@ -673,6 +673,7 @@ async fn run_mock_mode(config: RoverConfig, mut dock: DockUart) -> Result<()> {
                         firmware: format!("{}-mock", env!("CARGO_PKG_VERSION")),
                         battery_level: battery_pct,
                         status: "OK".to_string(),
+                        capabilities: 0x03, // ENCODERS + LIDAR
                     };
                     dock.send(reply).await?;
 

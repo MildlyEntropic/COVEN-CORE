@@ -269,8 +269,8 @@ impl Default for MotorConfig {
 
             pwm_frequency: 1000.0,
             wheel_base: 0.298,  // CubeRover 2U wheel separation
-            wheel_radius: 0.08, // 16cm diameter wheels
-            max_rpm: 100.0,
+            wheel_radius: 0.1,  // 200mm diameter wheels
+            max_rpm: 100.0,    // JGA25-371 ~100 RPM no-load
         }
     }
 }
@@ -282,7 +282,7 @@ impl Default for EncoderConfig {
             left_b: 24,
             right_a: 27,
             right_b: 22,
-            pulses_per_rev: 210, // N20 motor, 30:1 gearbox, 7 PPR
+            pulses_per_rev: 408, // JGA25-371, 34:1 gearbox, 12 PPR
         }
     }
 }

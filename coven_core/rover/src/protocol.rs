@@ -154,6 +154,8 @@ pub enum RoverMessage {
         battery_level: f64,
         /// Status message.
         status: String,
+        /// Hardware capability bitmask (0x01=encoders, 0x02=lidar, 0x04=ultrasonic, etc.)
+        capabilities: u8,
     },
     /// Rover verification response.
     VerifyRep {
@@ -539,9 +541,10 @@ impl RoverMessage {
                 firmware,
                 battery_level,
                 status,
+                capabilities,
             } => format!(
-                "IDENTIFY_REP:{}:{}:{}:{:.1}:{}",
-                module_id, module_type, firmware, battery_level, status
+                "IDENTIFY_REP:{}:{}:{}:{:.1}:{}:0x{:02x}",
+                module_id, module_type, firmware, battery_level, status, capabilities
             ),
             RoverMessage::VerifyRep {
                 module_id,

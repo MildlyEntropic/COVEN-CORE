@@ -68,17 +68,17 @@ class CubeRoverSize(Enum):
 class CubeRoverConfig:
     """CubeRover physical specifications (NASA/Astrobotic)."""
 
-    size: CubeRoverSize = CubeRoverSize.SIZE_6U
+    size: CubeRoverSize = CubeRoverSize.SIZE_2U
 
-    # Mobility specs (from Astrobotic)
-    max_speed: float = 0.1  # m/s (10 cm/s)
+    # Mobility specs
+    max_speed: float = 0.3  # m/s (JGA25-371 no-load speed)
     max_slope: float = 30.0  # degrees
     obstacle_clearance: float = 0.15  # meters (15 cm diameter)
 
-    # Physical dimensions (6U default)
-    length: float = 0.30  # meters
-    width: float = 0.20  # meters
-    height: float = 0.10  # meters
+    # Physical dimensions (2U CubeRover chassis)
+    length: float = 0.21  # meters (210mm)
+    width: float = 0.21  # meters (210mm)
+    height: float = 0.10  # meters (100mm)
 
     # Power/comms per kg payload
     power_per_kg: float = 0.5  # watts continuous
@@ -94,8 +94,8 @@ class CubeRoverConfig:
 class NavigationConfig:
     """Navigation and waypoint configuration for CubeRover."""
 
-    # CubeRover speed limits (from CubeRoverConfig)
-    max_linear_speed: float = 0.1  # m/s (CubeRover top speed: 10 cm/s)
+    # CubeRover speed limits
+    max_linear_speed: float = 0.3  # m/s (JGA25-371 no-load speed)
     max_angular_speed: float = 0.5  # rad/s
 
     # Waypoint navigation
@@ -103,8 +103,8 @@ class NavigationConfig:
     waypoint_nav_timeout: float = 60.0  # seconds per waypoint
     waypoint_position_tolerance: float = 0.3  # meters - close enough = arrived
 
-    # Robot physical properties (6U CubeRover: ~30x20x10cm)
-    robot_radius: float = 0.15  # meters (max(30,20)/2 = 15cm)
+    # Robot physical properties (2U CubeRover: 210x210mm body, 298mm track width)
+    robot_radius: float = 0.15  # meters (298mm track / 2 ≈ 15cm)
 
     # Goal tolerances
     xy_goal_tolerance: float = 0.03  # 3cm for docking precision

@@ -37,6 +37,17 @@ class DataBatchProcessor:
     def __init__(self, bridge: 'RoverBridge'):
         self._bridge = bridge
 
+    def handle_data_batch_sync(
+        self, rover: 'ConnectedRover', mission_id: str, batch: dict
+    ):
+        """Synchronous wrapper for handle_data_batch (called from serial thread)."""
+        import asyncio
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(self.handle_data_batch(rover, mission_id, batch))
+        finally:
+            loop.close()
+
     async def handle_data_batch(
         self, rover: 'ConnectedRover', mission_id: str, batch: dict
     ):
@@ -48,10 +59,16 @@ class DataBatchProcessor:
         samples = batch.get("samples", [])
         num_samples = len(samples)
 
+        has_lidar = bool(rover.capabilities & 0x02) if hasattr(rover, 'capabilities') else True
         self._bridge.get_logger().info(
             f"Received data batch from {rover.module_id}: mission={mission_id}, "
             f"{num_samples} samples"
         )
+        if not has_lidar:
+            self._bridge.get_logger().info(
+                f"Processing encoder-only batch from {rover.module_id} "
+                "(no LiDAR data expected)"
+            )
 
         # === BATCH VALIDATION ===
         if num_samples < MIN_SAMPLES:

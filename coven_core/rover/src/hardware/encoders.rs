@@ -387,10 +387,10 @@ impl EncoderReader {
         let (left, right) = self.get_ticks();
 
         // Check for unreasonably high tick rates (noise)
-        // At max speed: 20 PPR encoder * 4x quadrature = 80 ticks/rev
-        // At 200 RPM = 200/60 * 80 = ~267 ticks/sec per wheel
-        // Allow 2x margin = 534 ticks/sec, or ~50 ticks per 100ms sample
-        let max_reasonable_ticks_per_sec = 600.0;
+        // JGA25-371: 408 PPR * 4x quadrature = 1632 ticks/rev
+        // At 100 RPM = 100/60 * 1632 = ~2720 ticks/sec per wheel
+        // Allow 2x margin = ~5500 ticks/sec
+        let max_reasonable_ticks_per_sec = 5500.0;
         let max_delta = (max_reasonable_ticks_per_sec * dt_secs) as i64;
 
         let delta_left = (left - self.last_left_ticks).abs();

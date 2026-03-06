@@ -569,10 +569,11 @@ fn encode_message(msg: &RoverMessage) -> Result<(u8, Vec<u8>)> {
             firmware,
             battery_level,
             status,
+            capabilities,
         } => {
             // IDENTIFY_REPLY payload format (from spec):
             // "COV" magic + module_type(1) + revision(1) + extended data
-            // We extend this with: module_id, firmware, battery, status
+            // We extend this with: module_id, firmware, battery, status, capabilities
             let mut payload = Vec::new();
 
             // Magic bytes "COV"
@@ -583,6 +584,7 @@ fn encode_message(msg: &RoverMessage) -> Result<(u8, Vec<u8>)> {
                 "ReconRover" => 0x01,
                 "CargoRover" => 0x02,
                 "DrillRover" => 0x03,
+                "ArduinoBot" => 0x04,
                 _ => 0x00,
             };
             payload.push(type_byte);
@@ -607,6 +609,9 @@ fn encode_message(msg: &RoverMessage) -> Result<(u8, Vec<u8>)> {
             let status_bytes = status.as_bytes();
             payload.push(status_bytes.len().min(255) as u8);
             payload.extend_from_slice(&status_bytes[..status_bytes.len().min(255)]);
+
+            // Capabilities bitmask (1 byte)
+            payload.push(*capabilities);
 
             Ok((MessageType::IdentifyReply as u8, payload))
         }

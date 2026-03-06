@@ -111,6 +111,7 @@ class RoverInfo:
     module_id: str
     status: RoverStatus = RoverStatus.UNKNOWN
     payload: PayloadType = PayloadType.LIDAR  # Default assumption
+    capabilities: int = 0x03  # Bitmask (default = ENCODERS + LIDAR for backward compat)
     battery_pct: float = 100.0
     damage_level: int = 0  # 0-3, 0=none, 3=critical
     position: Tuple[float, float] = (0.0, 0.0)
@@ -136,6 +137,11 @@ class RoverInfo:
         # If incompatible, return immediately (don't waste time on other factors)
         if payload_mod >= 999999:
             return 999999
+
+        # Capability penalty: rover without LiDAR can still explore via
+        # dead-reckoning but can't contribute scan data for SLAM
+        if task.task_type == TaskType.EXPLORE and not (self.capabilities & 0x02):
+            bid += 30
 
         # Battery state
         if self.battery_pct < 30:
@@ -293,7 +299,7 @@ class TaskAuctioneer:
                 payload=payload,
                 **kwargs
             )
-            logger.info(f"Registered rover: {module_id} (payload={payload.value})")
+            logger.info(f"Registered rover: {module_id} (payload={payload.value}, caps=0x{self.rovers[module_id].capabilities:02x})")
         else:
             # Update existing
             rover = self.rovers[module_id]

@@ -1,12 +1,13 @@
 # Test configuration for mock rover
-# Points to localhost for testing with rover_bridge
+# Used for desktop testing without physical hardware
 
 rover_id = "Test_Rover"
 coven_name = "Test_Coven"
 
-# Connect to local bridge
-dock_address = "127.0.0.1"
-dock_port = 5555
+# Dock UART (mock — use socat PTY pair for testing)
+[dock_uart]
+port = "/tmp/coven_test_uart"
+baud_rate = 115200
 
 [hardware.motors]
 left_pwm = 12
@@ -18,7 +19,7 @@ right_in2 = 26
 standby = 17
 pwm_frequency = 1000.0
 wheel_base = 0.298
-wheel_radius = 0.08
+wheel_radius = 0.1      # 200mm diameter wheels
 max_rpm = 100.0
 
 [hardware.encoders]
@@ -26,7 +27,7 @@ left_a = 23
 left_b = 24
 right_a = 27
 right_b = 22
-pulses_per_rev = 210
+pulses_per_rev = 408    # JGA25-371, 34:1 gearbox, 12 PPR
 
 [hardware.lidar]
 port = "/dev/ydlidar"
@@ -35,8 +36,27 @@ scan_rate = 6.0
 range_min = 0.12
 range_max = 10.0
 
+[hardware.battery]
+adc_address = 0x48
+divider_ratio = 11.0
+full_voltage = 12.6
+empty_voltage = 9.6
+
 [timing]
 control_rate = 20.0
 heartbeat_rate = 1.0
 odom_rate = 50.0
 cmd_timeout = 0.5
+battery_check_interval = 2.0
+
+[navigation]
+k_att = 1.0
+k_rep = 0.8
+d_influence = 1.5
+d_safe = 0.25
+goal_tolerance = 0.1
+max_linear = 0.3
+max_angular = 1.5
+k_heading = 2.0
+low_battery_threshold = 15.0
+mission_timeout_factor = 5.0

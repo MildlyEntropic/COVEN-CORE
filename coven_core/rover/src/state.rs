@@ -459,6 +459,7 @@ impl RoverStateMachine {
                         firmware: env!("CARGO_PKG_VERSION").to_string(),
                         battery_level: self.battery_pct,
                         status: "OK".to_string(),
+                        capabilities: 0x03, // ENCODERS + LIDAR
                     };
                     self.dock.send(reply).await?;
 
@@ -487,6 +488,7 @@ impl RoverStateMachine {
                         firmware: env!("CARGO_PKG_VERSION").to_string(),
                         battery_level: self.battery_pct,
                         status: "OK".to_string(),
+                        capabilities: 0x03, // ENCODERS + LIDAR
                     };
                     self.dock.send(reply).await?;
 

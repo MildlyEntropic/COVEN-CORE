@@ -27,7 +27,7 @@ setup(
         (os.path.join('share', package_name, 'config'),
          glob('config/*.yaml')),
     ],
-    install_requires=['setuptools', 'numpy'],
+    install_requires=['setuptools', 'numpy', 'pyserial'],
     zip_safe=True,
     maintainer='Alexander Shultis',
     maintainer_email='shultisa@hawaii.edu',

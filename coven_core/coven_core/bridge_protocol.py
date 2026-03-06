@@ -1,9 +1,10 @@
 """
 bridge_protocol.py — COVEN handshake and message protocol handler.
 
-Dispatches incoming rover messages (colon-delimited and JSON) to the
-appropriate handler: identify, verify, heartbeat, scan, odom, batch,
-and task lifecycle messages. Instantiated by the RoverBridge node.
+Dispatches decoded binary frame messages to the appropriate handler:
+identify, verify, heartbeat, scan, odom, batch, and task lifecycle.
+Messages arrive as Python dicts from frame_codec.decode_message().
+Instantiated by the RoverBridge node.
 
 Author: Alexander Shultis
 Date: January 2025
@@ -14,7 +15,7 @@ from __future__ import annotations
 import json
 import math
 import time
-from typing import List, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
 from sensor_msgs.msg import LaserScan
 from nav_msgs.msg import Odometry
@@ -24,6 +25,16 @@ from coven_core.common import (
 )
 from coven_core.task_auctioneer import (
     PayloadType, RoverStatus as AuctionRoverStatus,
+)
+from coven_core.frame_codec import (
+    encode_identify_request,
+    encode_verify_ok,
+    encode_verify_fail,
+    CAP_LIDAR,
+    CAP_CAMERA,
+    CAP_SPECTROMETER,
+    CAP_DRILL,
+    capabilities_to_list,
 )
 
 if TYPE_CHECKING:
@@ -36,63 +47,49 @@ class ProtocolHandler:
     def __init__(self, bridge: 'RoverBridge'):
         self._bridge = bridge
 
-    async def process_message(self, rover: 'ConnectedRover', message: str):
-        """Process a message from a rover."""
+    def process_message(self, rover: 'ConnectedRover', msg: dict):
+        """Process a decoded message dict from frame_codec.decode_message()."""
         from coven_core.rover_bridge import RoverState  # noqa: F811
 
-        if message.startswith('{'):
-            self._bridge.get_logger().info(f"JSON from {rover.module_id}: {message[:200]}...")
-        else:
-            self._bridge.get_logger().debug(f"Received from {rover.module_id}: {message[:100]}...")
+        msg_type = msg.get("type", "")
 
-        # Try JSON first (for complex messages)
-        if message.startswith('{'):
-            try:
-                data = json.loads(message)
-                await self._process_json_message(rover, data)
-                return
-            except json.JSONDecodeError:
-                pass
+        self._bridge.get_logger().debug(
+            f"Received from {rover.module_id}: {msg_type}"
+        )
 
-        # Parse colon-delimited message
-        parts = message.split(':')
-        msg_type = parts[0] if parts else ""
-
-        if msg_type == "IDENTIFY_REP":
-            await self._handle_identify_rep(rover, parts)
+        if msg_type == "IDENTIFY_REPLY":
+            self._handle_identify_reply(rover, msg)
         elif msg_type == "VERIFY_REP":
-            await self._handle_verify_rep(rover, parts)
+            self._handle_verify_rep(rover, msg)
         elif msg_type == "HEARTBEAT":
-            await self._handle_heartbeat(rover, parts)
+            self._handle_heartbeat(rover, msg)
         elif msg_type == "TASK_ACK":
-            await self._handle_task_ack(rover, parts)
+            self._handle_task_ack(rover, msg)
         elif msg_type == "TASK_START":
-            await self._handle_task_start(rover, parts)
+            self._handle_task_start(rover, msg)
         elif msg_type == "TASK_COMPLETE":
-            await self._handle_task_complete(rover, parts)
+            self._handle_task_complete(rover, msg)
+        elif msg_type == "DATA_BATCH":
+            self._handle_data_batch(rover, msg)
+        elif msg_type == "SCAN_DATA":
+            self._handle_scan_data_wrapper(rover, msg)
+        elif msg_type == "ODOM_DATA":
+            self._handle_odom_data_wrapper(rover, msg)
+        elif msg_type == "FAULT_ALERT":
+            self._bridge.get_logger().error(
+                f"FAULT from {rover.module_id}: {msg.get('payload', 'unknown')}"
+            )
+        elif msg_type == "SYSTEM_PING":
+            self._bridge.get_logger().debug(f"PING from {rover.module_id}")
         else:
             self._bridge.get_logger().warn(f"Unknown message type: {msg_type}")
 
-    async def _process_json_message(self, rover: 'ConnectedRover', data: dict):
-        """Process a JSON message (scan, odom, or batch data)."""
-        if "DataBatch" in data:
-            batch_wrapper = data["DataBatch"]
-            mission_id = batch_wrapper.get("mission_id", "unknown")
-            batch_data = batch_wrapper.get("batch", {})
-            await self._bridge.data_proc.handle_data_batch(rover, mission_id, batch_data)
-        elif "ScanData" in data:
-            scan_wrapper = data["ScanData"]
-            scan_data = scan_wrapper.get("scan", scan_wrapper)
-            await self._handle_scan_data(rover, scan_data)
-        elif "OdomData" in data:
-            odom_wrapper = data["OdomData"]
-            odom_data = odom_wrapper.get("odom", odom_wrapper)
-            await self._handle_odom_data(rover, odom_data)
-        else:
-            self._bridge.get_logger().warn(f"Unknown JSON message: {list(data.keys())}")
+    # -------------------------------------------------------------------------
+    # Handshake
+    # -------------------------------------------------------------------------
 
-    async def _handle_identify_rep(self, rover: 'ConnectedRover', parts: List[str]):
-        """Handle IDENTIFY_REP from rover.
+    def _handle_identify_reply(self, rover: 'ConnectedRover', msg: dict):
+        """Handle IDENTIFY_REPLY from rover.
 
         Implements the three reconnection scenarios:
         1. New rover (claims "new_witch"): Assign fresh witch name
@@ -101,15 +98,12 @@ class ProtocolHandler:
         """
         from coven_core.rover_bridge import RoverState  # noqa: F811
 
-        if len(parts) < 6:
-            self._bridge.get_logger().error(f"Malformed IDENTIFY_REP (need 6 parts): {parts}")
-            return
-
-        claimed_name = parts[1]
-        rover.module_type = parts[2]
-        rover.firmware = parts[3]
-        rover.battery_level = float(parts[4]) / 100.0 if len(parts) > 4 else 1.0
-        rover_status = parts[5]
+        claimed_name = msg.get("module_id", "")
+        rover.module_type = msg.get("module_type", "unknown")
+        rover.firmware = msg.get("firmware", "unknown")
+        rover.battery_level = msg.get("battery_level", 100.0) / 100.0
+        rover.capabilities = msg.get("capabilities", 0)
+        rover_status = msg.get("status", "OK")
 
         if rover_status != "OK":
             self._bridge.get_logger().warning(
@@ -118,25 +112,21 @@ class ProtocolHandler:
 
         old_id = rover.module_id
         final_name = None
-        welcome_message = None
 
         if claimed_name == "new_witch" or not claimed_name:
             final_name = get_witch_name()
-            welcome_message = f"I'm gonna call you {final_name}!"
             self._bridge.get_logger().info(
-                f"New rover connected - assigning name: {final_name}"
+                f"New rover connected — assigning name: {final_name}"
             )
         elif is_witch_known(claimed_name):
             status = get_witch_status(claimed_name)
             if status == "missing":
                 final_name = get_witch_name(returning_name=claimed_name)
                 if final_name == claimed_name:
-                    welcome_message = f"Welcome back {final_name}!"
                     self._bridge.get_logger().info(
-                        f"Returning rover {final_name} reconnected - welcome back!"
+                        f"Returning rover {final_name} reconnected — welcome back!"
                     )
                 else:
-                    welcome_message = f"No you aren't. You are {final_name}!"
                     self._bridge.get_logger().info(
                         f"Rover claimed {claimed_name} but assigned {final_name}"
                     )
@@ -145,16 +135,13 @@ class ProtocolHandler:
                     f"Rover claims to be {claimed_name} but that name is already active!"
                 )
                 final_name = get_witch_name()
-                welcome_message = f"No you aren't. You are {final_name}!"
             else:
                 final_name = get_witch_name()
-                welcome_message = f"No you aren't. You are {final_name}!"
                 self._bridge.get_logger().info(
                     f"Rover claimed {claimed_name} (released), now {final_name}"
                 )
         else:
             final_name = get_witch_name()
-            welcome_message = f"No you aren't. You are {final_name}!"
             self._bridge.get_logger().info(
                 f"Rover claimed unknown/expired name '{claimed_name}', assigned {final_name}"
             )
@@ -164,8 +151,12 @@ class ProtocolHandler:
 
         mark_witch_active(final_name)
 
+        caps = capabilities_to_list(rover.capabilities)
         self._bridge.get_logger().info(
-            f"{rover.module_id} reporting for duty! ({rover.module_type}, fw {rover.firmware}, battery {rover.battery_level*100:.0f}%)"
+            f"{rover.module_id} reporting for duty! "
+            f"({rover.module_type}, fw {rover.firmware}, "
+            f"battery {rover.battery_level * 100:.0f}%, "
+            f"caps={caps})"
         )
 
         with self._bridge.rovers_lock:
@@ -175,39 +166,38 @@ class ProtocolHandler:
 
         self._bridge.topics.setup_rover(rover.module_id)
 
-        await self._bridge._send_message(
-            rover,
-            f"IDENTIFY_ACK:{self._bridge.dock_id}:{final_name}:{welcome_message}"
+        # Send VERIFY_OK with the assigned name (binary protocol —
+        # no separate IDENTIFY_ACK step)
+        self._bridge.send_frame(
+            encode_verify_ok(self._bridge.dock_id, rover.module_id)
         )
 
-        await self._bridge._send_message(rover, f"VERIFY_REQ:{self._bridge.dock_id}:{rover.module_id}")
-
-    async def _handle_verify_rep(self, rover: 'ConnectedRover', parts: List[str]):
-        """Handle VERIFY_REP from rover."""
+    def _handle_verify_rep(self, rover: 'ConnectedRover', msg: dict):
+        """Handle VERIFY_REP from rover (DATA_FRAME subtype 0x01)."""
         from coven_core.rover_bridge import RoverState  # noqa: F811
 
-        if len(parts) < 3:
-            return
-
-        success = parts[2].lower() == "true"
+        success = msg.get("success", False)
 
         if success:
             rover.state = RoverState.VERIFIED
             self._bridge.get_logger().info(f"Rover {rover.module_id} verified successfully")
 
-            payload = PayloadType.LIDAR
-            if "spectro" in rover.module_type.lower():
-                payload = PayloadType.SPECTROMETER
-            elif "drill" in rover.module_type.lower():
-                payload = PayloadType.DRILL
-            elif "cargo" in rover.module_type.lower():
-                payload = PayloadType.CARGO
-            elif "camera" in rover.module_type.lower():
+            # Infer primary payload from capability bitmask
+            if rover.capabilities & CAP_LIDAR:
+                payload = PayloadType.LIDAR
+            elif rover.capabilities & CAP_CAMERA:
                 payload = PayloadType.CAMERA
+            elif rover.capabilities & CAP_SPECTROMETER:
+                payload = PayloadType.SPECTROMETER
+            elif rover.capabilities & CAP_DRILL:
+                payload = PayloadType.DRILL
+            else:
+                payload = PayloadType.CARGO  # Encoders-only rover
 
             self._bridge.auctioneer.register_rover(
                 module_id=rover.module_id,
                 payload=payload,
+                capabilities=rover.capabilities,
                 battery_pct=rover.battery_level * 100.0,
                 position=(rover.x, rover.y),
                 heading=rover.theta,
@@ -223,20 +213,23 @@ class ProtocolHandler:
 
             rover.state = RoverState.ACTIVE
         else:
-            failed_checks = parts[3] if len(parts) > 3 else "unknown"
-            self._bridge.get_logger().warn(f"Rover {rover.module_id} verification failed: {failed_checks}")
+            failed = msg.get("failed_checks", [])
+            note = msg.get("note", "")
+            self._bridge.get_logger().warn(
+                f"Rover {rover.module_id} verification failed: {failed} ({note})"
+            )
 
-    async def _handle_heartbeat(self, rover: 'ConnectedRover', parts: List[str]):
-        """Handle HEARTBEAT from rover."""
-        if len(parts) < 7:
-            rover.last_heartbeat = time.time()
-            return
+    # -------------------------------------------------------------------------
+    # Heartbeat
+    # -------------------------------------------------------------------------
 
-        rover.battery_level = float(parts[2]) / 100.0
-        mission_status = parts[3]
-        rover.x = float(parts[4])
-        rover.y = float(parts[5])
-        rover.theta = float(parts[6])
+    def _handle_heartbeat(self, rover: 'ConnectedRover', msg: dict):
+        """Handle MODULE_HEARTBEAT from rover."""
+        rover.battery_level = msg.get("battery_pct", 100.0) / 100.0
+        mission_status = msg.get("mission_status", "IDLE")
+        rover.x = msg.get("x", 0.0)
+        rover.y = msg.get("y", 0.0)
+        rover.theta = msg.get("theta", 0.0)
         rover.last_heartbeat = time.time()
 
         auction_status = AuctionRoverStatus.IDLE
@@ -256,7 +249,17 @@ class ProtocolHandler:
         self._bridge._publish_rover_status(rover, mission_status)
         self._bridge.topics.publish_rover_tf(rover)
 
-    async def _handle_scan_data(self, rover: 'ConnectedRover', scan_data: dict):
+    # -------------------------------------------------------------------------
+    # Sensor Data
+    # -------------------------------------------------------------------------
+
+    def _handle_scan_data_wrapper(self, rover: 'ConnectedRover', msg: dict):
+        """Handle ScanData from DATA_FRAME subtype 0x20 (JSON)."""
+        scan_wrapper = msg.get("ScanData", msg)
+        scan_data = scan_wrapper.get("scan", scan_wrapper)
+        self._handle_scan_data(rover, scan_data)
+
+    def _handle_scan_data(self, rover: 'ConnectedRover', scan_data: dict):
         """Handle scan data from rover, publish as LaserScan."""
         if rover.module_id not in self._bridge.topics.scan_pubs:
             return
@@ -284,11 +287,18 @@ class ProtocolHandler:
         self._bridge.topics.publish_scan_threadsafe(rover.module_id, scan)
         rover.last_scan = scan
 
-    async def _handle_odom_data(self, rover: 'ConnectedRover', odom_data: dict):
+    def _handle_odom_data_wrapper(self, rover: 'ConnectedRover', msg: dict):
+        """Handle OdomData from DATA_FRAME subtype 0x20 (JSON)."""
+        odom_wrapper = msg.get("OdomData", msg)
+        odom_data = odom_wrapper.get("odom", odom_wrapper)
+        self._handle_odom_data(rover, odom_data)
+
+    def _handle_odom_data(self, rover: 'ConnectedRover', odom_data: dict):
         """Handle odometry data from rover, publish as Odometry."""
         if rover.module_id not in self._bridge.topics.odom_pubs:
             self._bridge.get_logger().warn(
-                f"No odom pub for {rover.module_id}, available: {list(self._bridge.topics.odom_pubs.keys())}"
+                f"No odom pub for {rover.module_id}, "
+                f"available: {list(self._bridge.topics.odom_pubs.keys())}"
             )
             return
 
@@ -319,19 +329,34 @@ class ProtocolHandler:
 
         self._bridge.topics.publish_rover_tf(rover)
 
-    async def _handle_task_ack(self, rover: 'ConnectedRover', parts: List[str]):
+    # -------------------------------------------------------------------------
+    # Data Batch
+    # -------------------------------------------------------------------------
+
+    def _handle_data_batch(self, rover: 'ConnectedRover', msg: dict):
+        """Handle DataBatch from DATA_FRAME subtype 0x20 (JSON)."""
+        batch_wrapper = msg.get("DataBatch", msg)
+        mission_id = batch_wrapper.get("mission_id", "unknown")
+        batch_data = batch_wrapper.get("batch", batch_wrapper)
+        self._bridge.data_proc.handle_data_batch_sync(rover, mission_id, batch_data)
+
+    # -------------------------------------------------------------------------
+    # Task Lifecycle
+    # -------------------------------------------------------------------------
+
+    def _handle_task_ack(self, rover: 'ConnectedRover', msg: dict):
         """Handle TASK_ACK from rover."""
-        self._bridge._publish_event("TASK_ACK", rover.module_id, {"parts": parts})
+        self._bridge._publish_event("TASK_ACK", rover.module_id, msg)
 
-    async def _handle_task_start(self, rover: 'ConnectedRover', parts: List[str]):
+    def _handle_task_start(self, rover: 'ConnectedRover', msg: dict):
         """Handle TASK_START from rover."""
-        self._bridge._publish_event("TASK_START", rover.module_id, {"parts": parts})
+        self._bridge._publish_event("TASK_START", rover.module_id, msg)
 
-    async def _handle_task_complete(self, rover: 'ConnectedRover', parts: List[str]):
+    def _handle_task_complete(self, rover: 'ConnectedRover', msg: dict):
         """Handle TASK_COMPLETE from rover."""
-        task_id = parts[2] if len(parts) > 2 else "unknown"
-        success = parts[3].lower() == "true" if len(parts) > 3 else False
-        duration = float(parts[6]) if len(parts) > 6 else 0.0
+        task_id = msg.get("task_id", "unknown")
+        success = msg.get("success", False)
+        duration = msg.get("duration", 0.0)
 
         rover.current_mission_id = None
         rover.mission_estimated_path_m = 0.0
@@ -344,7 +369,6 @@ class ProtocolHandler:
         )
 
         self._bridge._publish_event("TASK_COMPLETE", rover.module_id, {
-            "parts": parts,
             "task_id": task_id,
             "success": success,
             "duration": duration,
