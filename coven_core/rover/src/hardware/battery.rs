@@ -136,7 +136,7 @@ impl BatteryReader {
 
         // Do a test read to verify full functionality
         trace!("Performing test voltage read...");
-        let reader = Self {
+        let mut reader = Self {
             i2c,
             address: config.adc_address,
             divider_ratio: config.divider_ratio,
@@ -176,7 +176,7 @@ impl BatteryReader {
     }
 
     /// Read raw ADC voltage.
-    fn read_voltage(&self) -> Result<f64> {
+    fn read_voltage(&mut self) -> Result<f64> {
         // Configure ADC for single-shot reading
         let config = ADS_CONFIG_OS_SINGLE
             | ADS_CONFIG_MUX_SINGLE_0
@@ -185,11 +185,10 @@ impl BatteryReader {
             | ADS_CONFIG_DR_1600
             | ADS_CONFIG_COMP_DISABLE;
 
-        // Write config to start conversion
-        let config_bytes = [(config >> 8) as u8, config as u8];
-        // Workaround: rppal I2C doesn't have write_block_data, use smbus
+        // Write config register: [register_addr, MSB, LSB]
+        let config_bytes = [ADS_CONFIG_REG, (config >> 8) as u8, config as u8];
         self.i2c
-            .block_write(ADS_CONFIG_REG, &config_bytes)
+            .write(&config_bytes)
             .context("Failed to write ADC config")?;
 
         // Wait for ADC conversion (ADS1115 at 1600SPS ≈ 0.625ms)
@@ -199,14 +198,14 @@ impl BatteryReader {
         // Check conversion complete (OS bit = 1)
         let mut config_buf = [0u8; 2];
         self.i2c
-            .block_read(ADS_CONFIG_REG, &mut config_buf)
+            .write_read(&[ADS_CONFIG_REG], &mut config_buf)
             .context("Failed to read ADC config during conversion")?;
 
         if (config_buf[0] & 0x80) == 0 {
             // Not done yet, one more short wait
             std::thread::sleep(std::time::Duration::from_millis(5));
             self.i2c
-                .block_read(ADS_CONFIG_REG, &mut config_buf)
+                .write_read(&[ADS_CONFIG_REG], &mut config_buf)
                 .context("Failed to read ADC config during conversion retry")?;
             if (config_buf[0] & 0x80) == 0 {
                 return Err(anyhow::anyhow!("ADC conversion timeout"));
@@ -216,7 +215,7 @@ impl BatteryReader {
         // Read conversion result
         let mut buf = [0u8; 2];
         self.i2c
-            .block_read(ADS_CONVERSION_REG, &mut buf)
+            .write_read(&[ADS_CONVERSION_REG], &mut buf)
             .context("Failed to read ADC conversion")?;
 
         // Convert to voltage (ADS1115 is 16-bit, ADS1015 is 12-bit left-aligned)
@@ -238,7 +237,7 @@ impl BatteryReader {
     }
 
     /// Read battery percentage (0-100).
-    pub fn read_percent(&self) -> Result<f64> {
+    pub fn read_percent(&mut self) -> Result<f64> {
         let voltage = self.read_voltage()?;
 
         // Linear interpolation between empty and full voltage

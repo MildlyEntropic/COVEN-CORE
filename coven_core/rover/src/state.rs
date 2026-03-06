@@ -43,7 +43,10 @@ use crate::dock_uart::DockUart;
 use crate::hardware::{BatteryReader, Hardware};
 use crate::lidar::LidarDriver;
 use crate::navigation::{NavState, WaypointFollower};
-use crate::protocol::{DockMessage, RawSensorSample, RoverMessage, RoverState, SensorBatch};
+use crate::protocol::{
+    DockMessage, RawSensorSample, RoverMessage, RoverState, SensorBatch,
+    SENSOR_TYPE_LIDAR, encode_lidar_config, encode_lidar_ranges,
+};
 use crate::utils::now_secs;
 
 // ------------------------
@@ -132,9 +135,9 @@ impl RoverStateMachine {
         let lidar = LidarDriver::new(&config.hardware.lidar);
 
         // Try to initialize battery reader (may fail if ADC not present)
-        let battery = BatteryReader::new(&config.hardware.battery).ok();
+        let mut battery = BatteryReader::new(&config.hardware.battery).ok();
         let initial_battery = battery
-            .as_ref()
+            .as_mut()
             .and_then(|b| b.read_percent().ok())
             .unwrap_or(100.0);
 
@@ -240,7 +243,7 @@ impl RoverStateMachine {
             };
 
             if self.last_battery_read.elapsed() >= battery_interval {
-                if let Some(ref battery) = self.battery {
+                if let Some(ref mut battery) = self.battery {
                     if let Ok(pct) = battery.read_percent() {
                         self.battery_pct = pct;
                     }
@@ -327,15 +330,16 @@ impl RoverStateMachine {
                             let (left_ticks, right_ticks) =
                                 self.hardware.encoders.get_delta_ticks();
 
-                            // Get LiDAR ranges in mm
-                            let lidar_ranges_mm =
-                                scan.as_ref().map(|s| s.to_ranges_mm()).unwrap_or_default();
+                            // Get sensor data as opaque bytes
+                            let sensor_data = scan.as_ref()
+                                .map(|s| encode_lidar_ranges(&s.to_ranges_mm()))
+                                .unwrap_or_default();
 
                             let sample = RawSensorSample {
                                 timestamp: odom.timestamp - mission.batch.mission_start,
                                 left_ticks,
                                 right_ticks,
-                                lidar_ranges_mm,
+                                sensor_data,
                             };
                             mission.batch.add_sample(sample);
                         }
@@ -645,7 +649,8 @@ impl RoverStateMachine {
                     self.hardware.encoders.wheel_radius_mm(),
                     self.hardware.encoders.wheel_base_mm(),
                     self.hardware.encoders.ticks_per_rev(),
-                    360, // LiDAR rays
+                    SENSOR_TYPE_LIDAR,
+                    encode_lidar_config(-std::f64::consts::PI, std::f64::consts::PI, 360),
                 );
 
                 self.current_mission = Some(MissionData {

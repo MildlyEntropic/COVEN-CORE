@@ -16,8 +16,8 @@
 //! - Define raw sensor data structures for batch upload
 //! - Implement wire format serialization/deserialization
 //!
-//! Wire format (per Interface Spec v0.2):
-//!   [0x7E] [TYPE] [LEN] [PAYLOAD] [CRC] [0x7F]
+//! Wire format (per Interface Spec v0.3 — COBS):
+//!   [LEN_HI] [LEN_LO] [COBS-encoded data] [0x00]
 //! See dock_uart.rs for framing implementation.
 //!
 //! Author: Alexander Shultis
@@ -257,10 +257,29 @@ pub struct Waypoint {
 }
 
 // ------------------------
+// --- Sensor Types ---
+// ------------------------
+
+/// Sensor type tags for batch data. The transport layer treats sensor data
+/// as opaque bytes — only the dock's processing layer interprets the payload.
+#[allow(dead_code)] // Protocol constants — future sensor types
+pub const SENSOR_TYPE_NONE: u8 = 0x00;
+pub const SENSOR_TYPE_LIDAR: u8 = 0x01;
+#[allow(dead_code)]
+pub const SENSOR_TYPE_CAMERA: u8 = 0x02;
+#[allow(dead_code)]
+pub const SENSOR_TYPE_SPECTROMETER: u8 = 0x03;
+#[allow(dead_code)]
+pub const SENSOR_TYPE_DRILL: u8 = 0x04;
+
+// ------------------------
 // --- Raw Sensor Data ---
 // ------------------------
 
 /// A single raw sensor sample recorded during a mission.
+///
+/// Sensor data is stored as an opaque byte blob. The `sensor_type` field
+/// on the parent `SensorBatch` tells the dock how to interpret it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RawSensorSample {
     /// Timestamp in seconds since mission start.
@@ -269,11 +288,15 @@ pub struct RawSensorSample {
     pub left_ticks: i32,
     /// Right wheel encoder ticks since last sample.
     pub right_ticks: i32,
-    /// Raw LiDAR ranges in millimeters (0 = no return).
-    pub lidar_ranges_mm: Vec<u16>,
+    /// Opaque sensor payload — format depends on batch sensor_type.
+    pub sensor_data: Vec<u8>,
 }
 
 /// A batch of sensor samples from a mission.
+///
+/// The batch carries a `sensor_type` tag and an opaque `sensor_config` blob
+/// so the dock knows how to interpret the sensor data without hardcoding
+/// any particular sensor format into the transport layer.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SensorBatch {
     /// When the mission started (Unix timestamp).
@@ -284,32 +307,30 @@ pub struct SensorBatch {
     pub wheel_base_mm: u16,
     /// Encoder ticks per revolution.
     pub ticks_per_rev: u16,
-    /// LiDAR minimum angle in radians.
-    pub lidar_angle_min: f64,
-    /// LiDAR maximum angle in radians.
-    pub lidar_angle_max: f64,
-    /// Number of LiDAR rays per scan.
-    pub lidar_num_rays: u16,
+    /// What kind of sensor data the samples carry.
+    pub sensor_type: u8,
+    /// Sensor-specific calibration/configuration (opaque to transport).
+    pub sensor_config: Vec<u8>,
     /// The raw sensor samples.
     pub samples: Vec<RawSensorSample>,
 }
 
 impl SensorBatch {
-    /// Create a new empty batch with robot configuration.
+    /// Create a new empty batch with robot and sensor configuration.
     pub fn new(
         wheel_radius_mm: u16,
         wheel_base_mm: u16,
         ticks_per_rev: u16,
-        lidar_num_rays: u16,
+        sensor_type: u8,
+        sensor_config: Vec<u8>,
     ) -> Self {
         Self {
             mission_start: now_secs(),
             wheel_radius_mm,
             wheel_base_mm,
             ticks_per_rev,
-            lidar_angle_min: -std::f64::consts::PI,
-            lidar_angle_max: std::f64::consts::PI,
-            lidar_num_rays,
+            sensor_type,
+            sensor_config,
             samples: Vec::new(),
         }
     }
@@ -336,6 +357,42 @@ impl SensorBatch {
         self.samples.clear();
         self.mission_start = now_secs();
     }
+}
+
+// ------------------------
+// --- LiDAR Encoding ---
+// ------------------------
+
+/// Encode LiDAR calibration into sensor_config bytes.
+///
+/// Format: [angle_min:f64 LE][angle_max:f64 LE][num_rays:u16 LE] = 18 bytes.
+pub fn encode_lidar_config(angle_min: f64, angle_max: f64, num_rays: u16) -> Vec<u8> {
+    let mut config = Vec::with_capacity(18);
+    config.extend_from_slice(&angle_min.to_le_bytes());
+    config.extend_from_slice(&angle_max.to_le_bytes());
+    config.extend_from_slice(&num_rays.to_le_bytes());
+    config
+}
+
+/// Decode LiDAR calibration from sensor_config bytes.
+#[allow(dead_code)]
+pub fn decode_lidar_config(config: &[u8]) -> Option<(f64, f64, u16)> {
+    if config.len() < 18 {
+        return None;
+    }
+    let angle_min = f64::from_le_bytes(config[0..8].try_into().ok()?);
+    let angle_max = f64::from_le_bytes(config[8..16].try_into().ok()?);
+    let num_rays = u16::from_le_bytes(config[16..18].try_into().ok()?);
+    Some((angle_min, angle_max, num_rays))
+}
+
+/// Encode LiDAR ranges (u16 mm) into sensor_data bytes.
+pub fn encode_lidar_ranges(ranges_mm: &[u16]) -> Vec<u8> {
+    let mut data = Vec::with_capacity(ranges_mm.len() * 2);
+    for &r in ranges_mm {
+        data.extend_from_slice(&r.to_le_bytes());
+    }
+    data
 }
 
 // ------------------------

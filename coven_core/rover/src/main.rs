@@ -429,7 +429,7 @@ async fn run_diagnostics(config: RoverConfig) -> Result<()> {
     info!("");
     info!("═══ TEST 5: Battery Monitor ═══");
     match BatteryReader::new(&config.hardware.battery) {
-        Ok(battery) => match battery.read_percent() {
+        Ok(mut battery) => match battery.read_percent() {
             Ok(percent) => {
                 info!("[PASS] Battery: {:.0}%", percent);
                 test_results.push(("Battery", "PASS", format!("{:.0}%", percent)));
@@ -580,7 +580,7 @@ async fn run_mock_mode(config: RoverConfig, mut dock: DockUart) -> Result<()> {
     use crate::navigation::{NavState, WaypointFollower};
     use crate::protocol::{
         DockMessage, OdomDataCompact, RawSensorSample, RoverMessage, RoverState, ScanDataCompact,
-        SensorBatch,
+        SensorBatch, SENSOR_TYPE_LIDAR, encode_lidar_config, encode_lidar_ranges,
     };
     use std::time::{Duration, Instant};
     use tokio::signal;
@@ -752,7 +752,8 @@ async fn run_mock_mode(config: RoverConfig, mut dock: DockUart) -> Result<()> {
                         hardware.wheel_radius_mm(),
                         hardware.wheel_base_mm(),
                         hardware.ticks_per_rev(),
-                        360,
+                        SENSOR_TYPE_LIDAR,
+                        encode_lidar_config(-std::f64::consts::PI, std::f64::consts::PI, 360),
                     );
                     current_mission = Some((task_id.clone(), batch));
 
@@ -809,14 +810,15 @@ async fn run_mock_mode(config: RoverConfig, mut dock: DockUart) -> Result<()> {
                 if last_sample.elapsed() >= sample_period {
                     if let Some((_, ref mut batch)) = current_mission {
                         let (left_ticks, right_ticks) = hardware.get_delta_ticks();
-                        let lidar_ranges_mm =
-                            scan.as_ref().map(|s| s.to_ranges_mm()).unwrap_or_default();
+                        let sensor_data = scan.as_ref()
+                            .map(|s| encode_lidar_ranges(&s.to_ranges_mm()))
+                            .unwrap_or_default();
 
                         batch.add_sample(RawSensorSample {
                             timestamp: odom.timestamp - batch.mission_start,
                             left_ticks,
                             right_ticks,
-                            lidar_ranges_mm,
+                            sensor_data,
                         });
                     }
                     last_sample = Instant::now();

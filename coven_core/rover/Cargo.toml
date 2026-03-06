@@ -26,10 +26,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Error handling
 anyhow = "1"
-thiserror = "1"
-
-# Time
-chrono = { version = "0.4", features = ["serde"] }
 
 # Config
 toml = "0.8"

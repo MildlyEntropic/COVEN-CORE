@@ -20,8 +20,12 @@ Date: March 2026
 """
 
 import json
+import logging
 import struct
-from typing import List, Optional
+import time
+from typing import Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 
 # --- Frame constants ---
@@ -45,8 +49,20 @@ MSG_SYSTEM_PING = 0xFF        # bidirectional
 SUBTYPE_VERIFY_REP = 0x01
 SUBTYPE_TASK_MESSAGE = 0x10
 SUBTYPE_SENSOR_DATA = 0x20
+SUBTYPE_SENSOR_BATCH_CHUNK = 0x21
 SUBTYPE_CMD_VEL = 0x30
 SUBTYPE_ENABLE_POWER = 0x40
+
+# Batch chunk types (second byte of SENSOR_BATCH_CHUNK payload)
+CHUNK_TYPE_HEADER = 0x01
+CHUNK_TYPE_DATA = 0x02
+
+# Sensor type tags (matches protocol.rs)
+SENSOR_TYPE_NONE = 0x00
+SENSOR_TYPE_LIDAR = 0x01
+SENSOR_TYPE_CAMERA = 0x02
+SENSOR_TYPE_SPECTROMETER = 0x03
+SENSOR_TYPE_DRILL = 0x04
 
 # Module type bytes (matches dock_uart.rs encode_message)
 MODULE_TYPE_MAP = {
@@ -505,6 +521,8 @@ def decode_data_frame(payload: bytes) -> Optional[dict]:
         return _decode_task_json(data)
     elif subtype == SUBTYPE_SENSOR_DATA:
         return _decode_sensor_json(data)
+    elif subtype == SUBTYPE_SENSOR_BATCH_CHUNK:
+        return {"type": "SENSOR_BATCH_CHUNK", "chunk_data": bytes(data)}
     else:
         return None
 
@@ -619,3 +637,252 @@ def decode_message(msg_type: int, payload: bytes) -> Optional[dict]:
         return {"type": "SYSTEM_PING"}
     else:
         return None
+
+
+# ---------------------------------------------------------------------------
+# Binary batch chunk reassembly
+# ---------------------------------------------------------------------------
+
+class BatchChunkAssembler:
+    """Reassembles binary sensor batch chunks into a complete batch dict.
+
+    The transport layer is sensor-agnostic — sensor_config and sensor_data
+    are treated as opaque bytes. Only downstream processors interpret them.
+
+    Lifecycle per batch:
+      1. BATCH_HEADER chunk → stores metadata, allocates chunk buffer
+      2. BATCH_DATA chunks → unpacks samples, stores by sequence number
+      3. All chunks received → returns complete batch dict
+    """
+
+    def __init__(self, timeout_secs: float = 30.0):
+        self._timeout_secs = timeout_secs
+        self.reset()
+
+    def reset(self):
+        """Clear all state for a new batch transfer."""
+        self._header: Optional[dict] = None
+        self._chunks: Dict[int, list] = {}
+        self._last_chunk_time: float = 0.0
+
+    def feed_chunk(self, chunk_data: bytes) -> Optional[dict]:
+        """Feed a SENSOR_BATCH_CHUNK payload (after subtype byte removed).
+
+        Returns the complete batch dict when all chunks are received,
+        or None if still accumulating.
+        """
+        if len(chunk_data) < 1:
+            return None
+
+        # Check for timeout on partial batch
+        if self._header and self._last_chunk_time > 0:
+            elapsed = time.monotonic() - self._last_chunk_time
+            if elapsed > self._timeout_secs:
+                received = len(self._chunks)
+                expected = self._header.get("total_chunks", 0)
+                logger.warning(
+                    "Batch transfer timed out after %.1fs "
+                    "(%d/%d chunks received) — discarding",
+                    elapsed, received, expected,
+                )
+                self.reset()
+
+        chunk_type = chunk_data[0]
+        data = chunk_data[1:]
+
+        if chunk_type == CHUNK_TYPE_HEADER:
+            return self._handle_header(data)
+        elif chunk_type == CHUNK_TYPE_DATA:
+            return self._handle_data(data)
+        else:
+            logger.warning("Unknown batch chunk type: 0x%02X", chunk_type)
+            return None
+
+    def _handle_header(self, data: bytes) -> Optional[dict]:
+        """Process a BATCH_HEADER chunk."""
+        header = self._decode_header(data)
+        if header is None:
+            logger.warning("Failed to decode batch header")
+            return None
+
+        # If we had a partial batch from a different transfer, discard it
+        if self._header and self._header.get("batch_id") != header["batch_id"]:
+            logger.warning(
+                "New batch header (id=0x%08X) received while previous "
+                "batch (id=0x%08X) was incomplete — discarding previous",
+                header["batch_id"],
+                self._header.get("batch_id", 0),
+            )
+
+        self._header = header
+        self._chunks = {}
+        self._last_chunk_time = time.monotonic()
+
+        logger.info(
+            "Batch header: module=%s mission=%s samples=%d chunks=%d sensor=0x%02X",
+            header["module_id"], header["mission_id"],
+            header["total_samples"], header["total_chunks"],
+            header["sensor_type"],
+        )
+
+        # Edge case: empty batch (0 data chunks expected)
+        if header["total_chunks"] == 0:
+            return self._assemble_batch()
+
+        return None
+
+    def _handle_data(self, data: bytes) -> Optional[dict]:
+        """Process a BATCH_DATA chunk."""
+        if self._header is None:
+            logger.warning("Received data chunk without header — dropping")
+            return None
+
+        result = self._decode_data_chunk(data)
+        if result is None:
+            logger.warning("Failed to decode data chunk")
+            return None
+
+        batch_id, chunk_seq, samples = result
+
+        # Verify batch_id matches
+        if batch_id != self._header["batch_id"]:
+            logger.warning(
+                "Data chunk batch_id 0x%08X doesn't match header 0x%08X — dropping",
+                batch_id, self._header["batch_id"],
+            )
+            return None
+
+        self._chunks[chunk_seq] = samples
+        self._last_chunk_time = time.monotonic()
+
+        # Check if all chunks received
+        if len(self._chunks) >= self._header["total_chunks"]:
+            return self._assemble_batch()
+
+        return None
+
+    def _decode_header(self, data: bytes) -> Optional[dict]:
+        """Decode BATCH_HEADER fields from binary data."""
+        if len(data) < 8:
+            return None
+
+        pos = 0
+        batch_id = struct.unpack_from('<I', data, pos)[0]; pos += 4
+        total_samples = struct.unpack_from('<H', data, pos)[0]; pos += 2
+        total_chunks = struct.unpack_from('<H', data, pos)[0]; pos += 2
+
+        # Module ID (length-prefixed)
+        if pos >= len(data):
+            return None
+        mid_len = data[pos]; pos += 1
+        if pos + mid_len > len(data):
+            return None
+        module_id = data[pos:pos + mid_len].decode('utf-8', errors='replace')
+        pos += mid_len
+
+        # Mission ID (length-prefixed)
+        if pos >= len(data):
+            return None
+        msn_len = data[pos]; pos += 1
+        if pos + msn_len > len(data):
+            return None
+        mission_id = data[pos:pos + msn_len].decode('utf-8', errors='replace')
+        pos += msn_len
+
+        # Batch metadata
+        if pos + 14 > len(data):
+            return None
+        mission_start = struct.unpack_from('<d', data, pos)[0]; pos += 8
+        wheel_radius_mm = struct.unpack_from('<H', data, pos)[0]; pos += 2
+        wheel_base_mm = struct.unpack_from('<H', data, pos)[0]; pos += 2
+        ticks_per_rev = struct.unpack_from('<H', data, pos)[0]; pos += 2
+
+        # Sensor type + opaque config blob
+        if pos + 3 > len(data):
+            return None
+        sensor_type = data[pos]; pos += 1
+        config_len = struct.unpack_from('<H', data, pos)[0]; pos += 2
+        if pos + config_len > len(data):
+            return None
+        sensor_config = bytes(data[pos:pos + config_len])
+
+        return {
+            "batch_id": batch_id,
+            "total_samples": total_samples,
+            "total_chunks": total_chunks,
+            "module_id": module_id,
+            "mission_id": mission_id,
+            "mission_start": mission_start,
+            "wheel_radius_mm": wheel_radius_mm,
+            "wheel_base_mm": wheel_base_mm,
+            "ticks_per_rev": ticks_per_rev,
+            "sensor_type": sensor_type,
+            "sensor_config": sensor_config,
+        }
+
+    def _decode_data_chunk(self, data: bytes) -> Optional[tuple]:
+        """Decode BATCH_DATA chunk. Returns (batch_id, chunk_seq, samples)."""
+        if len(data) < 8:
+            return None
+
+        pos = 0
+        batch_id = struct.unpack_from('<I', data, pos)[0]; pos += 4
+        chunk_seq = struct.unpack_from('<H', data, pos)[0]; pos += 2
+        sample_count = struct.unpack_from('<H', data, pos)[0]; pos += 2
+
+        samples = []
+        for _ in range(sample_count):
+            # Fixed fields: timestamp(8) + left(4) + right(4) + data_len(2) = 18
+            if pos + 18 > len(data):
+                break
+
+            timestamp = struct.unpack_from('<d', data, pos)[0]; pos += 8
+            left_ticks = struct.unpack_from('<i', data, pos)[0]; pos += 4
+            right_ticks = struct.unpack_from('<i', data, pos)[0]; pos += 4
+            sensor_data_len = struct.unpack_from('<H', data, pos)[0]; pos += 2
+
+            if pos + sensor_data_len > len(data):
+                break
+            sensor_data = bytes(data[pos:pos + sensor_data_len])
+            pos += sensor_data_len
+
+            samples.append({
+                "timestamp": timestamp,
+                "left_ticks": left_ticks,
+                "right_ticks": right_ticks,
+                "sensor_data": sensor_data,
+            })
+
+        return (batch_id, chunk_seq, samples)
+
+    def _assemble_batch(self) -> dict:
+        """Assemble all received chunks into the final batch dict."""
+        header = self._header
+
+        # Concatenate samples in sequence order
+        all_samples = []
+        for seq in sorted(self._chunks.keys()):
+            all_samples.extend(self._chunks[seq])
+
+        result = {
+            "type": "DATA_BATCH",
+            "module_id": header["module_id"],
+            "mission_id": header["mission_id"],
+            "sensor_type": header["sensor_type"],
+            "sensor_config": header["sensor_config"],
+            "batch": {
+                "mission_start": header["mission_start"],
+                "wheel_radius_mm": header["wheel_radius_mm"],
+                "wheel_base_mm": header["wheel_base_mm"],
+                "ticks_per_rev": header["ticks_per_rev"],
+                "samples": all_samples,
+            },
+        }
+
+        logger.info(
+            "Batch assembled: %d samples from %d chunks (sensor=0x%02X)",
+            len(all_samples), len(self._chunks), header["sensor_type"],
+        )
+
+        self.reset()
+        return result

@@ -48,7 +48,7 @@ use tokio_serial::{SerialPortBuilderExt, SerialStream};
 use tracing::{debug, error, info, trace, warn};
 
 // --- Local ---
-use crate::protocol::{DockMessage, RoverMessage};
+use crate::protocol::{DockMessage, RoverMessage, SensorBatch};
 
 // ------------------------
 // --- Constants ---
@@ -58,6 +58,13 @@ use crate::protocol::{DockMessage, RoverMessage};
 const MAX_PAYLOAD_SIZE: usize = 8192;
 /// Maximum total frame size (len prefix + COBS overhead + terminator).
 const MAX_FRAME_SIZE: usize = MAX_PAYLOAD_SIZE + 512;
+
+/// DATA_FRAME subtype for binary sensor batch chunks.
+const SUBTYPE_SENSOR_BATCH_CHUNK: u8 = 0x21;
+/// Batch chunk type: header (metadata, sent once).
+const CHUNK_TYPE_HEADER: u8 = 0x01;
+/// Batch chunk type: data (samples, sent N times).
+const CHUNK_TYPE_DATA: u8 = 0x02;
 
 /// Message types from Interface Specification v0.2.
 #[repr(u8)]
@@ -579,26 +586,33 @@ async fn handle_uart_connection(
 
             // Write to UART
             Some(msg) = outgoing_rx.recv() => {
-                match build_frame(&msg) {
-                    Ok(frame) => {
-                        trace!("Sending frame ({} bytes)", frame.len());
-                        match port.write_all(&frame).await {
-                            Ok(()) => {
-                                if let Err(e) = port.flush().await {
-                                    error!("UART flush error: {}", e);
+                match build_frames(&msg) {
+                    Ok(frames) => {
+                        for (i, frame) in frames.iter().enumerate() {
+                            trace!("Sending frame {}/{} ({} bytes)", i + 1, frames.len(), frame.len());
+                            match port.write_all(frame).await {
+                                Ok(()) => {
+                                    if let Err(e) = port.flush().await {
+                                        error!("UART flush error: {}", e);
+                                        return Err(e.into());
+                                    }
+                                }
+                                Err(e) => {
+                                    error!("UART write error: {}", e);
                                     return Err(e.into());
                                 }
-                                frames_sent += 1;
-                                debug!(frame = frames_sent, "Sent rover message");
                             }
-                            Err(e) => {
-                                error!("UART write error: {}", e);
-                                return Err(e.into());
+                            // Small delay between frames for multi-frame sends
+                            // to prevent receiver buffer overflow
+                            if frames.len() > 1 && i < frames.len() - 1 {
+                                tokio::time::sleep(Duration::from_millis(5)).await;
                             }
                         }
+                        frames_sent += frames.len() as u64;
+                        debug!(frame = frames_sent, count = frames.len(), "Sent rover message");
                     }
                     Err(e) => {
-                        warn!("Failed to build frame: {}", e);
+                        warn!("Failed to build frames: {}", e);
                     }
                 }
             }
@@ -610,13 +624,28 @@ async fn handle_uart_connection(
 // --- Frame Building ---
 // ------------------------
 
-/// Build a COBS-framed UART message from a RoverMessage.
+/// Build one or more COBS-framed UART messages from a RoverMessage.
+///
+/// DataBatch messages are split into multiple frames (header + data chunks).
+/// All other message types produce a single frame.
+fn build_frames(msg: &RoverMessage) -> Result<Vec<Vec<u8>>> {
+    match msg {
+        RoverMessage::DataBatch {
+            module_id,
+            mission_id,
+            batch,
+        } => encode_data_batch_frames(module_id, mission_id, batch),
+        _ => {
+            let (msg_type, payload) = encode_message(msg)?;
+            Ok(vec![build_single_frame(msg_type, &payload)?])
+        }
+    }
+}
+
+/// Build a single COBS-framed UART message from type and payload.
 ///
 /// Wire format: [LEN_HI][LEN_LO][COBS data][0x00]
-fn build_frame(msg: &RoverMessage) -> Result<Vec<u8>> {
-    // Determine message type and payload
-    let (msg_type, payload) = encode_message(msg)?;
-
+fn build_single_frame(msg_type: u8, payload: &[u8]) -> Result<Vec<u8>> {
     if payload.len() > MAX_PAYLOAD_SIZE {
         anyhow::bail!(
             "Payload too large: {} bytes (max {})",
@@ -627,13 +656,13 @@ fn build_frame(msg: &RoverMessage) -> Result<Vec<u8>> {
 
     // Build raw block: [TYPE] [PAYLOAD] [CRC]
     let mut crc: u8 = msg_type;
-    for &b in &payload {
+    for &b in payload {
         crc ^= b;
     }
 
     let mut raw = Vec::with_capacity(payload.len() + 2);
     raw.push(msg_type);
-    raw.extend_from_slice(&payload);
+    raw.extend_from_slice(payload);
     raw.push(crc);
 
     // COBS encode (no zeros in output)
@@ -648,6 +677,154 @@ fn build_frame(msg: &RoverMessage) -> Result<Vec<u8>> {
     frame.push(0x00); // COBS terminator
 
     Ok(frame)
+}
+
+// ------------------------
+// --- DataBatch Binary Encoding ---
+// ------------------------
+
+/// Compute a batch transfer ID from identifiers (FNV-1a hash).
+fn compute_batch_id(module_id: &str, mission_id: &str, mission_start: f64) -> u32 {
+    let mut hash: u32 = 0x811c_9dc5;
+    for b in module_id.bytes().chain(mission_id.bytes()) {
+        hash ^= b as u32;
+        hash = hash.wrapping_mul(0x0100_0193);
+    }
+    hash ^= (mission_start.to_bits() & 0xFFFF_FFFF) as u32;
+    hash
+}
+
+/// Encode a DataBatch into multiple binary frames (header + data chunks).
+///
+/// The transport layer is sensor-agnostic: sensor_config and sensor_data
+/// are packed as opaque length-prefixed blobs.
+fn encode_data_batch_frames(
+    module_id: &str,
+    mission_id: &str,
+    batch: &SensorBatch,
+) -> Result<Vec<Vec<u8>>> {
+    // Compute per-sample wire size: timestamp(8) + left(4) + right(4) + len(2) + sensor_data
+    let sensor_data_len = batch.samples.first().map(|s| s.sensor_data.len()).unwrap_or(0);
+    let sample_wire_size = 8 + 4 + 4 + 2 + sensor_data_len;
+
+    // Data chunk overhead: subtype(1) + chunk_type(1) + batch_id(4) + seq(2) + count(2) = 10
+    let data_chunk_overhead = 10;
+    let max_samples_per_chunk = if sample_wire_size > 0 {
+        (MAX_PAYLOAD_SIZE - data_chunk_overhead) / sample_wire_size
+    } else {
+        batch.samples.len().max(1)
+    };
+
+    if max_samples_per_chunk == 0 {
+        anyhow::bail!(
+            "Single sample ({} bytes) exceeds max payload ({})",
+            sample_wire_size,
+            MAX_PAYLOAD_SIZE
+        );
+    }
+
+    let total_samples = batch.samples.len();
+    let total_chunks = if total_samples > 0 {
+        (total_samples + max_samples_per_chunk - 1) / max_samples_per_chunk
+    } else {
+        0
+    };
+
+    let batch_id = compute_batch_id(module_id, mission_id, batch.mission_start);
+    let mut frames = Vec::with_capacity(total_chunks + 1);
+
+    // --- Header frame ---
+    let header_payload = build_batch_header_payload(
+        batch_id,
+        total_samples,
+        total_chunks,
+        module_id,
+        mission_id,
+        batch,
+    );
+    frames.push(build_single_frame(MessageType::DataFrame as u8, &header_payload)?);
+
+    // --- Data frames ---
+    for (chunk_idx, chunk_samples) in batch.samples.chunks(max_samples_per_chunk).enumerate() {
+        let data_payload = build_batch_data_payload(batch_id, chunk_idx, chunk_samples);
+        frames.push(build_single_frame(MessageType::DataFrame as u8, &data_payload)?);
+    }
+
+    info!(
+        samples = total_samples,
+        chunks = total_chunks,
+        sensor_type = batch.sensor_type,
+        "DataBatch encoded: {} frames total",
+        frames.len()
+    );
+
+    Ok(frames)
+}
+
+/// Build the BATCH_HEADER payload.
+fn build_batch_header_payload(
+    batch_id: u32,
+    total_samples: usize,
+    total_chunks: usize,
+    module_id: &str,
+    mission_id: &str,
+    batch: &SensorBatch,
+) -> Vec<u8> {
+    let mut p = Vec::with_capacity(128);
+
+    p.push(SUBTYPE_SENSOR_BATCH_CHUNK);
+    p.push(CHUNK_TYPE_HEADER);
+    p.extend_from_slice(&batch_id.to_le_bytes());
+    p.extend_from_slice(&(total_samples as u16).to_le_bytes());
+    p.extend_from_slice(&(total_chunks as u16).to_le_bytes());
+
+    // Module ID (length-prefixed)
+    let mid = module_id.as_bytes();
+    p.push(mid.len() as u8);
+    p.extend_from_slice(mid);
+
+    // Mission ID (length-prefixed)
+    let msn = mission_id.as_bytes();
+    p.push(msn.len() as u8);
+    p.extend_from_slice(msn);
+
+    // Batch metadata
+    p.extend_from_slice(&batch.mission_start.to_le_bytes());
+    p.extend_from_slice(&batch.wheel_radius_mm.to_le_bytes());
+    p.extend_from_slice(&batch.wheel_base_mm.to_le_bytes());
+    p.extend_from_slice(&batch.ticks_per_rev.to_le_bytes());
+
+    // Sensor type + opaque config blob
+    p.push(batch.sensor_type);
+    p.extend_from_slice(&(batch.sensor_config.len() as u16).to_le_bytes());
+    p.extend_from_slice(&batch.sensor_config);
+
+    p
+}
+
+/// Build a BATCH_DATA payload for one chunk of samples.
+fn build_batch_data_payload(
+    batch_id: u32,
+    chunk_idx: usize,
+    samples: &[crate::protocol::RawSensorSample],
+) -> Vec<u8> {
+    let mut p = Vec::with_capacity(MAX_PAYLOAD_SIZE);
+
+    p.push(SUBTYPE_SENSOR_BATCH_CHUNK);
+    p.push(CHUNK_TYPE_DATA);
+    p.extend_from_slice(&batch_id.to_le_bytes());
+    p.extend_from_slice(&(chunk_idx as u16).to_le_bytes());
+    p.extend_from_slice(&(samples.len() as u16).to_le_bytes());
+
+    for sample in samples {
+        p.extend_from_slice(&sample.timestamp.to_le_bytes());
+        p.extend_from_slice(&sample.left_ticks.to_le_bytes());
+        p.extend_from_slice(&sample.right_ticks.to_le_bytes());
+        p.extend_from_slice(&(sample.sensor_data.len() as u16).to_le_bytes());
+        p.extend_from_slice(&sample.sensor_data);
+    }
+
+    p
 }
 
 /// Encode a RoverMessage into message type and payload bytes.
@@ -793,11 +970,15 @@ fn encode_message(msg: &RoverMessage) -> Result<(u8, Vec<u8>)> {
             Ok((MessageType::DataFrame as u8, payload))
         }
 
-        RoverMessage::DataBatch { .. }
-        | RoverMessage::ScanData { .. }
+        RoverMessage::DataBatch { .. } => {
+            // DataBatch is handled by build_frames() -> encode_data_batch_frames()
+            // This arm should never be reached.
+            anyhow::bail!("DataBatch must be encoded via build_frames(), not encode_message()")
+        }
+
+        RoverMessage::ScanData { .. }
         | RoverMessage::OdomData { .. } => {
-            // Large data uses chunked DATA_FRAME with JSON
-            // Note: For very large batches, this should be chunked
+            // Real-time debug streams use JSON on subtype 0x20
             let json = serde_json::to_vec(msg)?;
             let mut payload = Vec::new();
             payload.push(0x20); // Subtype: SENSOR_DATA

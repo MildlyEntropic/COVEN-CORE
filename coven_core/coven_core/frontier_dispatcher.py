@@ -298,6 +298,7 @@ class FrontierDispatcher(Node):
     def _initial_dispatch(self):
         """Send first rover in a default direction if no map exists."""
         if self.initial_dispatched:
+            self.initial_timer.cancel()
             return
 
         now = self.get_clock().now().nanoseconds / 1e9
@@ -317,6 +318,7 @@ class FrontierDispatcher(Node):
                 self.get_logger().info(f'[Dispatcher] Sending {rover.module_id} {dir_name} ({math.degrees(direction):.0f}°)')
                 self._dispatch_rover(rover.module_id, direction=direction)
             self.initial_dispatched = True
+            self.initial_timer.cancel()
 
     def _periodic_dispatch_check(self):
         """Periodically check for idle rovers and dispatch them."""

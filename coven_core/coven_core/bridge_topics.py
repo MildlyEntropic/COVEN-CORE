@@ -11,9 +11,12 @@ Date: January 2025
 
 from __future__ import annotations
 
+import logging
 import math
 import queue
 from typing import Dict, TYPE_CHECKING
+
+logger = logging.getLogger(__name__)
 
 from geometry_msgs.msg import Twist, TransformStamped
 from sensor_msgs.msg import LaserScan
@@ -82,7 +85,8 @@ class TopicManager:
                 module_id, odom = self.odom_queue.get_nowait()
                 if module_id in self.odom_pubs:
                     self.odom_pubs[module_id].publish(odom)
-            except Exception:
+            except Exception as e:
+                logger.warning("Odom publish failed: %s", e)
                 break
 
         while not self.scan_queue.empty():
@@ -90,14 +94,16 @@ class TopicManager:
                 module_id, scan = self.scan_queue.get_nowait()
                 if module_id in self.scan_pubs:
                     self.scan_pubs[module_id].publish(scan)
-            except Exception:
+            except Exception as e:
+                logger.warning("Scan publish failed: %s", e)
                 break
 
         while not self.tf_queue.empty():
             try:
                 transform = self.tf_queue.get_nowait()
                 self.tf_broadcaster.sendTransform(transform)
-            except Exception:
+            except Exception as e:
+                logger.warning("TF publish failed: %s", e)
                 break
 
     def publish_odom_threadsafe(self, module_id: str, odom: Odometry):

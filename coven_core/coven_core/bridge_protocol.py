@@ -30,6 +30,7 @@ from coven_core.frame_codec import (
     encode_identify_request,
     encode_verify_ok,
     encode_verify_fail,
+    BatchChunkAssembler,
     CAP_LIDAR,
     CAP_CAMERA,
     CAP_SPECTROMETER,
@@ -46,6 +47,7 @@ class ProtocolHandler:
 
     def __init__(self, bridge: 'RoverBridge'):
         self._bridge = bridge
+        self._batch_assembler = BatchChunkAssembler(timeout_secs=30.0)
 
     def process_message(self, rover: 'ConnectedRover', msg: dict):
         """Process a decoded message dict from frame_codec.decode_message()."""
@@ -71,6 +73,8 @@ class ProtocolHandler:
             self._handle_task_complete(rover, msg)
         elif msg_type == "DATA_BATCH":
             self._handle_data_batch(rover, msg)
+        elif msg_type == "SENSOR_BATCH_CHUNK":
+            self._handle_sensor_batch_chunk(rover, msg)
         elif msg_type == "SCAN_DATA":
             self._handle_scan_data_wrapper(rover, msg)
         elif msg_type == "ODOM_DATA":
@@ -334,11 +338,31 @@ class ProtocolHandler:
     # -------------------------------------------------------------------------
 
     def _handle_data_batch(self, rover: 'ConnectedRover', msg: dict):
-        """Handle DataBatch from DATA_FRAME subtype 0x20 (JSON)."""
-        batch_wrapper = msg.get("DataBatch", msg)
-        mission_id = batch_wrapper.get("mission_id", "unknown")
-        batch_data = batch_wrapper.get("batch", batch_wrapper)
-        self._bridge.data_proc.handle_data_batch_sync(rover, mission_id, batch_data)
+        """Handle DataBatch — from JSON (subtype 0x20) or binary reassembly (0x21)."""
+        mission_id = msg.get("mission_id") or msg.get("DataBatch", {}).get("mission_id", "unknown")
+        batch_data = msg.get("batch") or msg.get("DataBatch", {}).get("batch", msg)
+        self._bridge.data_proc.handle_data_batch_sync(
+            rover, mission_id, batch_data,
+            sensor_type=msg.get("sensor_type"),
+            sensor_config=msg.get("sensor_config"),
+        )
+
+    def _handle_sensor_batch_chunk(self, rover: 'ConnectedRover', msg: dict):
+        """Handle a binary sensor batch chunk (subtype 0x21).
+
+        Feeds the chunk to the assembler. When all chunks arrive,
+        dispatches the complete batch to _handle_data_batch.
+        """
+        chunk_data = msg.get("chunk_data", b"")
+        result = self._batch_assembler.feed_chunk(chunk_data)
+
+        if result is not None:
+            num_samples = len(result.get("batch", {}).get("samples", []))
+            self._bridge.get_logger().info(
+                f"Batch reassembly complete from {rover.module_id}: "
+                f"{num_samples} samples"
+            )
+            self._handle_data_batch(rover, result)
 
     # -------------------------------------------------------------------------
     # Task Lifecycle
