@@ -29,6 +29,7 @@ from coven_core.task_auctioneer import (
 )
 from coven_core.frame_codec import (
     encode_identify_request,
+    encode_identify_ack,
     encode_verify_ok,
     encode_verify_fail,
     BatchChunkAssembler,
@@ -87,7 +88,7 @@ class ProtocolHandler:
         elif msg_type == "SYSTEM_PING":
             self._bridge.get_logger().debug(f"PING from {rover.module_id}")
         else:
-            self._bridge.get_logger().warn(f"Unknown message type: {msg_type}")
+            self._bridge.get_logger().warning(f"Unknown message type: {msg_type}")
 
     # -------------------------------------------------------------------------
     # Handshake
@@ -171,8 +172,12 @@ class ProtocolHandler:
 
         self._bridge.topics.setup_rover(rover.module_id)
 
-        # Send VERIFY_OK with the assigned name (binary protocol —
-        # no separate IDENTIFY_ACK step)
+        # Send IDENTIFY_ACK confirming the rover's final name
+        self._bridge.send_frame(
+            encode_identify_ack(self._bridge.dock_id, rover.module_id)
+        )
+
+        # Then send VERIFY_OK to proceed with verification
         self._bridge.send_frame(
             encode_verify_ok(self._bridge.dock_id, rover.module_id)
         )
@@ -220,7 +225,7 @@ class ProtocolHandler:
         else:
             failed = msg.get("failed_checks", [])
             note = msg.get("note", "")
-            self._bridge.get_logger().warn(
+            self._bridge.get_logger().warning(
                 f"Rover {rover.module_id} verification failed: {failed} ({note})"
             )
 
@@ -301,7 +306,7 @@ class ProtocolHandler:
     def _handle_odom_data(self, rover: 'ConnectedRover', odom_data: dict):
         """Handle odometry data from rover, publish as Odometry."""
         if rover.module_id not in self._bridge.topics.odom_pubs:
-            self._bridge.get_logger().warn(
+            self._bridge.get_logger().warning(
                 f"No odom pub for {rover.module_id}, "
                 f"available: {list(self._bridge.topics.odom_pubs.keys())}"
             )

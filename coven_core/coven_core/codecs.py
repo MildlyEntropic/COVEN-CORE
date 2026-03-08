@@ -20,7 +20,7 @@ from coven_core.messages import (
     BidNotice, BidProposal,
     CoverageGoal, CoverageStatus, CoverageMissionComplete,
     RoverRegistration, RoverRegistrationAck,
-    SensorData, VelocityCommand, RoverStatusMsgMsg, DockCommand,
+    SensorData, VelocityCommand, RoverStatusMsg, DockCommand,
 )
 
 

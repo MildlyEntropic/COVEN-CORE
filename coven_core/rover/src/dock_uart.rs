@@ -19,6 +19,7 @@
 //!   0x02 — IDENTIFY_REPLY   (rover → dock)
 //!   0x03 — VERIFY_OK        (dock → rover)
 //!   0x04 — VERIFY_FAIL      (dock → rover)
+//!   0x05 — IDENTIFY_ACK     (dock → rover)
 //!   0x10 — DATA_FRAME       (bidirectional)
 //!   0x20 — MODULE_HEARTBEAT (rover → dock)
 //!   0x30 — FAULT_ALERT      (rover → dock)
@@ -67,7 +68,7 @@ const CHUNK_TYPE_HEADER: u8 = 0x01;
 /// Batch chunk type: data (samples, sent N times).
 const CHUNK_TYPE_DATA: u8 = 0x02;
 
-/// Message types from Interface Specification v0.2.
+/// Message types from Interface Specification v0.3.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MessageType {
@@ -79,6 +80,8 @@ pub enum MessageType {
     VerifyOk = 0x03,
     /// Dock reports verification failed (dock → rover).
     VerifyFail = 0x04,
+    /// Dock confirms rover identity (dock → rover).
+    IdentifyAck = 0x05,
     /// Data frame for task/sensor data (bidirectional).
     DataFrame = 0x10,
     /// Periodic heartbeat from rover (rover → dock).
@@ -97,6 +100,7 @@ impl MessageType {
             0x02 => Some(Self::IdentifyReply),
             0x03 => Some(Self::VerifyOk),
             0x04 => Some(Self::VerifyFail),
+            0x05 => Some(Self::IdentifyAck),
             0x10 => Some(Self::DataFrame),
             0x20 => Some(Self::ModuleHeartbeat),
             0x30 => Some(Self::FaultAlert),
@@ -705,8 +709,9 @@ fn encode_data_batch_frames(
     batch: &SensorBatch,
 ) -> Result<Vec<Vec<u8>>> {
     // Compute per-sample wire size: timestamp(8) + left(4) + right(4) + len(2) + sensor_data
-    let sensor_data_len = batch.samples.first().map(|s| s.sensor_data.len()).unwrap_or(0);
-    let sample_wire_size = 8 + 4 + 4 + 2 + sensor_data_len;
+    // Use max sensor_data size across all samples (size can vary per scan)
+    let max_sensor_data_len = batch.samples.iter().map(|s| s.sensor_data.len()).max().unwrap_or(0);
+    let sample_wire_size = 8 + 4 + 4 + 2 + max_sensor_data_len;
 
     // Data chunk overhead: subtype(1) + chunk_type(1) + batch_id(4) + seq(2) + count(2) = 10
     let data_chunk_overhead = 10;
@@ -1040,6 +1045,7 @@ fn parse_frame(cobs_data: &[u8]) -> Result<Option<DockMessage>> {
 
     match msg_type_enum {
         Some(MessageType::IdentifyRequest) => parse_identify_request(payload),
+        Some(MessageType::IdentifyAck) => parse_identify_ack(payload),
         Some(MessageType::VerifyOk) => parse_verify_ok(payload),
         Some(MessageType::VerifyFail) => parse_verify_fail(payload),
         Some(MessageType::DataFrame) => parse_data_frame(payload),
@@ -1101,6 +1107,56 @@ fn parse_identify_request(payload: &[u8]) -> Result<Option<DockMessage>> {
         dock_id,
         dock_name: coven_name,
         assigned_name,
+    }))
+}
+
+/// Parse IDENTIFY_ACK payload.
+fn parse_identify_ack(payload: &[u8]) -> Result<Option<DockMessage>> {
+    // dock_id_len(1) + dock_id + assigned_name_len(1) + assigned_name + message_len(1) + message
+    if payload.is_empty() {
+        anyhow::bail!("Empty IDENTIFY_ACK payload");
+    }
+
+    let mut pos = 0;
+
+    // Dock ID
+    let dock_id_len = payload[pos] as usize;
+    pos += 1;
+    if pos + dock_id_len > payload.len() {
+        anyhow::bail!("IDENTIFY_ACK: dock_id length exceeds payload");
+    }
+    let dock_id = String::from_utf8_lossy(&payload[pos..pos + dock_id_len]).to_string();
+    pos += dock_id_len;
+
+    // Assigned name
+    if pos >= payload.len() {
+        anyhow::bail!("IDENTIFY_ACK: missing assigned_name");
+    }
+    let name_len = payload[pos] as usize;
+    pos += 1;
+    if pos + name_len > payload.len() {
+        anyhow::bail!("IDENTIFY_ACK: assigned_name length exceeds payload");
+    }
+    let assigned_name = String::from_utf8_lossy(&payload[pos..pos + name_len]).to_string();
+    pos += name_len;
+
+    // Message (optional)
+    let message = if pos < payload.len() {
+        let msg_len = payload[pos] as usize;
+        pos += 1;
+        if pos + msg_len <= payload.len() {
+            String::from_utf8_lossy(&payload[pos..pos + msg_len]).to_string()
+        } else {
+            String::new()
+        }
+    } else {
+        String::new()
+    };
+
+    Ok(Some(DockMessage::IdentifyAck {
+        dock_id,
+        assigned_name,
+        message,
     }))
 }
 

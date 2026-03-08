@@ -31,7 +31,8 @@ RUN apt-get update && apt-get install -y \
 
 # Install Python dependencies
 RUN pip3 install --break-system-packages \
-    numpy
+    numpy \
+    pyserial
 
 # Create workspace
 RUN mkdir -p /ros2_ws/src

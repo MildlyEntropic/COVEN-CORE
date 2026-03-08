@@ -1,19 +1,20 @@
 # COVEN
 
-**Collaborative Observation Vehicles for Exploration Networks**
+**Composable Object-oriented Versatile Emergent Networks**
 
-A ROS2 multi-robot exploration system using the **data mule** pattern for efficient SLAM in resource-constrained environments.
+A multi-robot exploration system using the **data mule** pattern for efficient SLAM in resource-constrained environments. Rovers run Rust firmware on Raspberry Pi Zero 2W; the dock runs Python/ROS2 on a Raspberry Pi 4.
 
 ---
 
 ## What It Does
 
-COVEN deploys multiple lightweight rovers ("witches") from a central dock ("coven") to explore unknown environments. Unlike traditional multi-robot SLAM where each robot builds its own map, COVEN rovers are simple data collectors—they record sensor data during exploration and return it to the dock for centralized processing.
+COVEN deploys multiple lightweight rovers ("witches") from a central dock ("coven") to explore unknown environments. Rovers are simple data collectors—they record sensor data during exploration and physically return to the dock for centralized SLAM processing via wired USB connection.
 
 ```
                     ┌─────────────────┐
                     │     DOCK        │
                     │  (The Coven)    │
+                    │  Pi 4 / ROS2   │
                     │                 │
                     │  ┌───────────┐  │
                     │  │  Offline  │  │
@@ -24,13 +25,15 @@ COVEN deploys multiple lightweight rovers ("witches") from a central dock ("cove
                     │  │ Dispatch  │  │
                     │  └───────────┘  │
                     └────────┬────────┘
-                             │
+                             │ USB/UART
             ┌────────────────┼────────────────┐
             │                │                │
             ▼                ▼                ▼
        ┌─────────┐      ┌─────────┐      ┌─────────┐
        │ Witch 1 │      │ Witch 2 │      │ Witch N │
        │ (Rover) │      │ (Rover) │      │ (Rover) │
+       │ Pi Zero │      │ Pi Zero │      │ Pi Zero │
+       │  Rust   │      │  Rust   │      │  Rust   │
        └─────────┘      └─────────┘      └─────────┘
 ```
 
@@ -48,7 +51,7 @@ Traditional multi-robot SLAM requires:
 The data mule approach instead:
 - Uses simple, cheap rovers with minimal compute
 - Records raw sensor data during exploration
-- Returns to dock for centralized processing
+- Returns to dock for centralized processing via wired connection
 - Enables offline SLAM with full computational resources
 
 This makes COVEN ideal for:
@@ -58,71 +61,73 @@ This makes COVEN ideal for:
 
 ---
 
-## Quick Start
-
-### Simulation
-
-```bash
-cd ~/ros2_ws
-source /opt/ros/jazzy/setup.bash
-colcon build --packages-select coven_core
-source install/setup.bash
-
-# Launch with 2 rovers (default)
-ros2 launch coven_core coven_data_mule_sim.launch.py
-
-# Launch with 4 rovers
-ros2 launch coven_core coven_data_mule_sim.launch.py witch_count:=4
-```
-
-This opens separate terminal windows for:
-- **Gazebo**: Simulation environment
-- **Witch terminals**: One per rover showing navigation status
-- **Coven terminal**: Dispatcher and SLAM processor status
-
----
-
 ## Architecture
 
-### Core Nodes
+### Two-Stack Design
 
-| Node | Location | Purpose |
-|------|----------|---------|
-| `data_mule_module` | Rover | Navigate, record sensors, return data |
-| `frontier_dispatcher` | Dock | Analyze map, assign exploration targets |
-| `offline_slam_processor` | Dock | Replay recorded data through SLAM |
+| Component | Platform | Language | Purpose |
+|-----------|----------|----------|---------|
+| Rover firmware | Pi Zero 2W | Rust | Navigate, record sensors, return data |
+| Dock software | Pi 4 | Python/ROS2 | Coordinate rovers, run offline SLAM |
+
+Communication between dock and rover uses a binary UART protocol with COBS framing over USB.
 
 ### Rover State Machine
 
 ```
-IDLE → RECORDING → RETURNING → TRANSFERRING → COMPLETE → IDLE
-  │                                                        │
-  └────────────────────────────────────────────────────────┘
+Disconnected → Identifying → Normal → FieldOps → Docking → Uploading → Normal
+                                          │                                │
+                                          └────────────────────────────────┘
 ```
+
+### Subsumption Layers (Rover Navigation)
+
+| Priority | Layer | Role |
+|----------|-------|------|
+| L0 | Obstacle Avoidance | LiDAR repulsive field — always active |
+| L1 | Return to Dock | Default fallback — low battery / no task |
+| L2 | Wander & Collect | Opportunistic data — scenic return |
+| L3 | Navigate to Goal | Potential field to dock-assigned frontier |
+| L4 | Execute Task | Polymorphic — varies by rover type |
 
 ### Data Flow
 
-1. **Dispatch**: Dock sends waypoint to idle rover
-2. **Explore**: Rover navigates toward target, recording LiDAR + odometry at 10Hz
-3. **Return**: Rover heads back to dock when target reached
-4. **Transfer**: Rover saves JSON data file, notifies dock
-5. **Process**: Offline SLAM replays data at 10x speed, updates map
-6. **Repeat**: Frontier analysis finds new targets, cycle continues
+1. **Connect**: Rover docks, USB UART handshake establishes identity
+2. **Dispatch**: Dock sends frontier waypoint to idle rover
+3. **Explore**: Rover navigates toward target, recording LiDAR + odometry
+4. **Return**: Rover heads back to dock when target reached or battery low
+5. **Upload**: Rover transfers binary sensor batch over UART
+6. **Process**: Offline SLAM replays data, updates occupancy grid map
+7. **Repeat**: Frontier analysis finds new targets, cycle continues
 
-### Topics
+---
 
-**Published by Rovers:**
-| Topic | Purpose |
-|-------|---------|
-| `/coven/module_status` | Rover heartbeats and state |
-| `/coven/mule_data` | Data transfer notifications |
+## Quick Start
 
-**Published by Dock:**
-| Topic | Purpose |
-|-------|---------|
-| `/coven/missions` | Mission assignments |
-| `/coven/dispatcher_status` | Exploration progress |
-| `/coven/slam_processor_status` | SLAM processing state |
+### Dock (Raspberry Pi 4)
+
+```bash
+# Build dock software in Docker
+cd coven_core/docker
+docker build -t coven-ros2 .
+
+# Launch dock coordination
+ros2 launch coven_core coven_dock_hardware.launch.py
+```
+
+### Rover (Raspberry Pi Zero 2W)
+
+```bash
+# Build rover firmware
+cd coven_core/rover
+cargo build --release
+
+# Run with hardware
+./target/release/coven-rover
+
+# Run in mock mode (no hardware)
+./target/release/coven-rover --mock
+```
 
 ---
 
@@ -140,42 +145,27 @@ Session data is saved to:
         └── map.pgm              # Final map on shutdown
 ```
 
-Each `Scan[SS:SS].json` contains:
-- Mission metadata (ID, module, timestamps)
-- Initial position (x, y, theta) for world-frame alignment
-- Array of sensor frames (LiDAR ranges, odometry)
-
 ---
 
 ## Configuration
 
-### Rover Parameters
+### Rover (`rover.toml`)
+
+| Section | Key Parameters |
+|---------|----------------|
+| `[hardware.motors]` | PWM pins, direction pins, frequency |
+| `[hardware.encoders]` | Encoder pins, ticks per revolution |
+| `[hardware.lidar]` | Serial port, baud rate |
+| `[navigation]` | d_safe, max speeds, Lyapunov gains |
+| `[battery]` | ADC address, voltage divider ratio |
+
+### Dock (Launch Arguments)
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `module_id` | Required | Unique rover identifier |
-| `record_rate_hz` | 10.0 | Sensor recording frequency |
-| `linear_speed` | 0.4 | Forward velocity (m/s) |
-| `angular_speed` | 0.6 | Rotation velocity (rad/s) |
-| `obstacle_threshold` | 0.4 | Minimum obstacle distance (m) |
-| `spawn_x/y/yaw` | 0.0 | Spawn position for teleport-back (sim only) |
-
-### Dispatcher Parameters
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `coverage_goal` | 0.75 | Target map coverage (0-1) |
-| `exploration_radius` | 4.0 | Max distance from dock (m) |
-| `min_frontier_size` | 3 | Minimum frontier cell count |
-| `auto_dispatch` | true | Automatically send idle rovers |
-
-### SLAM Processor Parameters
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `playback_speed` | 10.0 | Replay speed multiplier |
-| `scan_topic` | /offline_scan | Topic for replayed scans |
-| `slam_output_dir` | "" | Directory for map output |
+| `coven_name` | The_Graeae | Dock identifier |
+| `dock_x/y` | 0.0 | Dock position in map frame |
+| `data_dir` | ~/Desktop/COVEN/Data | Data storage directory |
 
 ---
 
@@ -198,20 +188,32 @@ Names are drawn from mythology and pop culture.
 
 ```
 coven_core/
-├── coven_core/
-│   ├── data_mule_module.py      # Rover: navigate, record, return
-│   ├── frontier_dispatcher.py   # Dock: analyze map, dispatch rovers
-│   ├── offline_slam_processor.py # Dock: replay data through SLAM
-│   └── common.py                # Shared utilities, naming
+├── rover/                          # Rust rover firmware
+│   ├── src/
+│   │   ├── main.rs                 # Entry point, mock mode
+│   │   ├── state.rs                # Rover state machine
+│   │   ├── navigation.rs           # Lyapunov nav, waypoint follower
+│   │   ├── subsumption.rs          # L0-L4 behavioral layers
+│   │   ├── dock_uart.rs            # Binary UART protocol
+│   │   ├── protocol.rs             # Message type definitions
+│   │   └── hardware/               # Motor, encoder, LiDAR, battery drivers
+│   ├── rover.toml                  # Rover configuration
+│   └── Cargo.toml
+├── coven_core/                     # Python dock software
+│   ├── rover_bridge.py             # UART bridge: rovers ↔ ROS2
+│   ├── bridge_protocol.py          # COVEN handshake protocol
+│   ├── bridge_data.py              # Batch processing and disk persistence
+│   ├── frame_codec.py              # COBS framing and message encoding
+│   ├── frontier_dispatcher.py      # Frontier detection and rover dispatch
+│   ├── frontier_analysis.py        # Frontier clustering algorithms
+│   ├── offline_slam_processor.py   # Replay sensor data through SLAM
+│   └── task_auctioneer.py          # Mission assignment and tracking
 ├── config/
-│   └── slam_params_sim.yaml     # SLAM Toolbox configuration
+│   └── slam_params_hw.yaml         # SLAM Toolbox configuration
 ├── launch/
-│   └── coven_data_mule_sim.launch.py  # Main simulation launch
-├── models/
-│   ├── coven_rover/             # Rover SDF with LiDAR
-│   └── dock.sdf                 # Dock model
-├── worlds/
-│   └── coven_4rover.sdf         # Simulation world
+│   └── coven_dock_hardware.launch.py
+├── docker/
+│   └── Dockerfile                  # ROS2 Jazzy development container
 └── README.md
 ```
 
@@ -219,38 +221,19 @@ coven_core/
 
 ## Dependencies
 
+### Rover
+- Rust toolchain (stable)
+- `rppal` (GPIO/I2C/SPI for Raspberry Pi)
+- `serialport` (LiDAR UART)
+
+### Dock
 ```bash
-# Core
+# Core ROS2 packages
 sudo apt install ros-jazzy-slam-toolbox ros-jazzy-nav2-map-server
 
-# Simulation
-sudo apt install ros-jazzy-ros-gz ros-jazzy-robot-state-publisher
+# Python
+pip install pyserial numpy
 ```
-
----
-
-## Status
-
-### Working
-- Multi-rover dispatch in different directions (N, S, E, W, etc.)
-- Sensor data recording during exploration (LiDAR + odometry)
-- Obstacle avoidance and waypoint navigation
-- Return-to-dock behavior
-- Teleport back to spawn position (simulation)
-- Mission queuing for overlapping returns
-- State transition tracking (no race conditions)
-- Session-based data organization
-- Offline SLAM replay with world-frame transform
-
-### Known Issues
-- SLAM map saving may fail if `/map` topic isn't ready
-- Coverage calculation requires proper TF chain
-
-### Planned
-- Physical hardware support
-- Improved frontier selection (distance-based scoring)
-- Multi-dock coordination
-- Real wireless data transfer
 
 ---
 
@@ -277,35 +260,6 @@ The same dock that coordinates a single ReconRover in 2026 can coordinate a flee
 
 ---
 
-## Roadmap
-
-### COVEN 1.x (Current)
-- Data mule proof-of-concept with LiDAR
-- Single-dock coordination
-- Frontier-based exploration
-- Offline SLAM processing
-
-### COVEN 2.x
-- **Specialized Module Types**
-  - SpectrometerRover - Spectral analysis
-  - DrillRover - Sample collection
-  - CargoRover - Material transport
-- Task-type matching based on capability
-
-### COVEN 3.x
-- **Multi-Dock Networks**
-  - Dock-to-dock task handoff
-  - Regional coverage zones
-  - Distributed map sharing
-
-### COVEN 4.x
-- **Mini-Swarms**
-  - Swarm leaders coordinate sub-teams
-  - Formation-based exploration
-  - Fault-tolerant redistribution
-
----
-
 ## License
 
 MIT License - See LICENSE file
@@ -317,11 +271,10 @@ MIT License - See LICENSE file
 Alexander Shultis
 University of Hawaiʻi at Mānoa
 Department of Astronomy
-December 2025
 
 Faculty Advisor: Dr. Miguel Nunes (HSFL)
 Thesis Advisor: Dr. Jiaoyang Zhu (Colorado School of Mines)
 
 ---
 
-**ROS2 Jazzy | Python 3.12+ | Gazebo Harmonic**
+**Rust | ROS2 Jazzy | Python 3.12+ | Raspberry Pi**

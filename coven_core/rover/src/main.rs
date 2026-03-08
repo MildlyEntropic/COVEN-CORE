@@ -578,7 +578,7 @@ async fn run_real_mode(config: RoverConfig, dock: DockUart) -> Result<()> {
 /// without the physical UART hardware - this is mainly for testing logic.
 async fn run_mock_mode(config: RoverConfig, mut dock: DockUart) -> Result<()> {
     use crate::mock::MockHardware;
-    use crate::navigation::{NavParams, NavState, WaypointFollower};
+    use crate::navigation::{NavParams, NavState, VelocityCmd, WaypointFollower};
     use crate::protocol::{
         DockMessage, OdomDataCompact, RawSensorSample, RoverMessage, RoverState, ScanDataCompact,
         SensorBatch, SENSOR_TYPE_LIDAR, encode_lidar_config, encode_lidar_ranges,
@@ -833,13 +833,11 @@ async fn run_mock_mode(config: RoverConfig, mut dock: DockUart) -> Result<()> {
 
                 // === SUBSUMPTION NAVIGATION ===
 
-                // Pre-compute navigation velocity from WaypointFollower
-                let nav_cmd = scan.as_ref().map(|s| {
-                    navigator.update(
-                        odom.x, odom.y, odom.theta,
-                        &s.ranges, s.angle_min, s.angle_increment,
-                    )
-                });
+                // Pre-compute attractive velocity from WaypointFollower
+                // (goal-seeking only — L0 handles obstacle avoidance)
+                let nav_cmd = navigator.update(
+                    odom.x, odom.y, odom.theta,
+                );
                 let has_goal = navigator.has_goal();
 
                 // Build subsumption layer context
@@ -950,8 +948,44 @@ async fn run_mock_mode(config: RoverConfig, mut dock: DockUart) -> Result<()> {
                 }
             }
 
+            RoverState::Normal => {
+                // No mission — arbiter runs L2 (wander) / L1 (return to dock)
+
+                let min_range = scan.as_ref()
+                    .map(|s| s.ranges.iter()
+                        .filter(|r| r.is_finite() && **r > 0.0)
+                        .cloned()
+                        .fold(f64::INFINITY, f64::min))
+                    .unwrap_or(f64::INFINITY);
+
+                let ctx = LayerContext {
+                    robot_x: odom.x,
+                    robot_y: odom.y,
+                    robot_theta: odom.theta,
+                    lidar_ranges: scan.as_ref()
+                        .map(|s| s.ranges.clone())
+                        .unwrap_or_default(),
+                    min_range,
+                    lidar_angle_min: scan.as_ref()
+                        .map(|s| s.angle_min).unwrap_or(0.0),
+                    lidar_angle_increment: scan.as_ref()
+                        .map(|s| s.angle_increment).unwrap_or(0.0),
+                    d_safe: config.navigation.d_safe,
+                    battery_pct,
+                    low_battery_threshold: config.navigation.low_battery_threshold,
+                    nav_cmd: VelocityCmd::stop(),
+                    has_goal: false,
+                    has_mission: false,
+                    dock_x: 0.0,
+                    dock_y: 0.0,
+                };
+
+                let cmd = arbiter.evaluate(&ctx);
+                hardware.set_velocity(cmd.linear, cmd.angular);
+            }
+
             _ => {
-                // Not in FieldOps - safety stop if no manual control
+                // Not in FieldOps or Normal - safety stop
                 if last_cmd_vel.elapsed() > cmd_timeout {
                     hardware.stop();
                 }

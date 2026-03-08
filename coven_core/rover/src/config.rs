@@ -195,6 +195,9 @@ pub struct TimingConfig {
     /// Heartbeat send rate in Hz.
     pub heartbeat_rate: f64,
     /// Odometry publish rate in Hz.
+    /// Note: currently unused — odometry updates at control_rate.
+    /// Retained for config file compatibility.
+    #[allow(dead_code)]
     pub odom_rate: f64,
     /// Command velocity timeout in seconds.
     pub cmd_timeout: f64,
@@ -381,9 +384,9 @@ impl RoverConfig {
             (self.hardware.encoders.left_b, "Encoder Left B"),
             (self.hardware.encoders.right_a, "Encoder Right A"),
             (self.hardware.encoders.right_b, "Encoder Right B"),
+            (self.hardware.motors.left_pwm, "Motor Left PWM"),
+            (self.hardware.motors.right_pwm, "Motor Right PWM"),
         ];
-
-        // Note: PWM pins are fixed by hardware, not tracked here
 
         // Build usage map
         for (pin, name) in pins {

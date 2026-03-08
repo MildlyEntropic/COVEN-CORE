@@ -175,18 +175,12 @@ impl LyapunovNavigator {
         }
     }
 
-    /// Compute velocity command given robot pose and LiDAR scan
+    /// Compute combined velocity command (attractive + repulsive).
     ///
-    /// # Arguments
-    /// * `robot_x` - Robot X position (meters)
-    /// * `robot_y` - Robot Y position (meters)
-    /// * `robot_theta` - Robot heading (radians)
-    /// * `lidar_ranges` - LiDAR range readings (meters)
-    /// * `lidar_angle_min` - Start angle of scan (radians)
-    /// * `lidar_angle_increment` - Angle between rays (radians)
-    ///
-    /// # Returns
-    /// Velocity command (linear, angular)
+    /// Note: In the thesis subsumption model, attractive and repulsive
+    /// components are decomposed into separate layers (L0 vs L1-L4).
+    /// This combined method is retained for testing and direct use.
+    #[allow(dead_code)]
     pub fn compute_velocity(
         &self,
         robot_x: f64,
@@ -270,8 +264,65 @@ impl LyapunovNavigator {
         VelocityCmd { linear, angular }
     }
 
-    /// Compute repulsive force from LiDAR obstacles.
-    fn compute_repulsive_force(
+    /// Compute attractive-only velocity toward goal (no repulsive component).
+    ///
+    /// Per thesis Section 2.2.3: the attractive potential implements L3
+    /// (navigate to goal), while the repulsive potential implements L0
+    /// (obstacle avoidance). This method provides the pure attractive
+    /// component for layers L1–L4; L0 handles obstacle avoidance separately.
+    pub fn compute_attractive_velocity(
+        &self,
+        robot_x: f64,
+        robot_y: f64,
+        robot_theta: f64,
+    ) -> VelocityCmd {
+        let goal = match &self.goal {
+            Some(g) => g,
+            None => return VelocityCmd::stop(),
+        };
+
+        let dx_goal = goal.x - robot_x;
+        let dy_goal = goal.y - robot_y;
+        let dist_to_goal = (dx_goal * dx_goal + dy_goal * dy_goal).sqrt();
+
+        if dist_to_goal < self.params.goal_tolerance {
+            return VelocityCmd::stop();
+        }
+
+        // Attractive force: F_att = k_att * (goal - robot)
+        let f_att_x = self.params.k_att * dx_goal;
+        let f_att_y = self.params.k_att * dy_goal;
+
+        // Convert to robot frame
+        let cos_theta = robot_theta.cos();
+        let sin_theta = robot_theta.sin();
+        let f_robot_x = f_att_x * cos_theta + f_att_y * sin_theta;
+        let f_robot_y = -f_att_x * sin_theta + f_att_y * cos_theta;
+
+        // Desired heading in robot frame
+        let desired_heading = f_robot_y.atan2(f_robot_x);
+
+        // Linear velocity: proportional to forward component
+        let heading_factor = (1.0 + desired_heading.cos()) / 2.0;
+        let linear = (f_robot_x.max(0.0) * heading_factor).min(self.params.max_linear);
+
+        // Angular velocity: proportional to heading error
+        let angular = (self.params.k_heading * desired_heading)
+            .clamp(-self.params.max_angular, self.params.max_angular);
+
+        // Reduce linear when turning hard
+        let turn_factor = 1.0 - (angular.abs() / self.params.max_angular).powi(2);
+        let linear = linear * turn_factor.max(0.3);
+
+        VelocityCmd { linear, angular }
+    }
+
+    /// Compute repulsive force from LiDAR obstacles (world frame).
+    ///
+    /// Returns the summed repulsive force vector (fx, fy) from all obstacles
+    /// within influence distance. Per thesis: this is the gradient of
+    /// U_rep = 0.5 * k_rep * (1/d - 1/d_influence)^2.
+    pub fn compute_repulsive_force(
         &self,
         robot_theta: f64,
         ranges: &[f64],
@@ -324,9 +375,10 @@ impl LyapunovNavigator {
         (f_rep_x, f_rep_y)
     }
 
-    /// Find minimum range in scan (for emergency stop).
+    /// Find minimum range in scan.
     /// Returns f64::INFINITY if no valid ranges (allows operation to continue).
-    fn find_min_range(&self, ranges: &[f64]) -> f64 {
+    #[allow(dead_code)]
+    pub fn find_min_range(&self, ranges: &[f64]) -> f64 {
         ranges
             .iter()
             .filter(|r| r.is_finite() && **r > 0.0)
@@ -336,7 +388,7 @@ impl LyapunovNavigator {
     }
 
     /// Compute escape velocity when too close to obstacle.
-    fn compute_escape_velocity(
+    pub fn compute_escape_velocity(
         &self,
         _robot_theta: f64, // Not used - escape works in robot frame
         ranges: &[f64],
@@ -367,7 +419,7 @@ impl LyapunovNavigator {
     }
 
     /// Check if front of robot is blocked.
-    fn is_front_blocked(&self, ranges: &[f64], angle_min: f64, angle_increment: f64) -> bool {
+    pub fn is_front_blocked(&self, ranges: &[f64], angle_min: f64, angle_increment: f64) -> bool {
         // Check rays within ±30° of forward
         let front_angle_limit = PI / 6.0;
 
@@ -482,15 +534,16 @@ impl WaypointFollower {
         self.state
     }
 
-    /// Update navigation and get velocity command.
+    /// Update navigation and get attractive-only velocity command.
+    ///
+    /// Per thesis: WaypointFollower provides the attractive component (L3/L4).
+    /// Obstacle avoidance (repulsive component) is handled by L0 in the
+    /// subsumption arbiter, which combines attractive + repulsive velocities.
     pub fn update(
         &mut self,
         robot_x: f64,
         robot_y: f64,
         robot_theta: f64,
-        lidar_ranges: &[f64],
-        lidar_angle_min: f64,
-        lidar_angle_increment: f64,
     ) -> VelocityCmd {
         match self.state {
             NavState::Idle | NavState::Arrived | NavState::Stuck => {
@@ -516,18 +569,15 @@ impl WaypointFollower {
             self.stuck_detector.reset();
         }
 
-        // Compute velocity
-        let cmd = self.navigator.compute_velocity(
+        // Compute attractive velocity (goal-seeking, no obstacle avoidance)
+        let cmd = self.navigator.compute_attractive_velocity(
             robot_x,
             robot_y,
             robot_theta,
-            lidar_ranges,
-            lidar_angle_min,
-            lidar_angle_increment,
         );
 
         // Check for stuck condition
-        if self.stuck_detector.update(robot_x, robot_y, &cmd) {
+        if self.stuck_detector.update(robot_x, robot_y) {
             self.state = NavState::Stuck;
             return VelocityCmd::stop();
         }
@@ -593,7 +643,14 @@ impl StuckDetector {
     }
 
     /// Update detector and return true if stuck.
-    fn update(&mut self, x: f64, y: f64, cmd: &VelocityCmd) -> bool {
+    ///
+    /// Checks position progress only — does not inspect commanded velocity.
+    /// With the subsumption decomposition, the attractive velocity (from L3/L4)
+    /// is always non-zero during navigation, even when L0 legitimately stops
+    /// the rover near an obstacle. Checking position progress alone is the
+    /// correct criterion: if the rover hasn't moved in 5+ seconds during
+    /// active navigation, it's genuinely stuck regardless of commands.
+    fn update(&mut self, x: f64, y: f64) -> bool {
         self.update_count += 1;
 
         // Check every ~1 second (at 20Hz control rate)
@@ -614,8 +671,8 @@ impl StuckDetector {
         self.last_x = Some(x);
         self.last_y = Some(y);
 
-        // If we're commanding motion but not moving, we might be stuck
-        if cmd.linear.abs() > 0.05 && dist_moved < 0.02 {
+        // Not making progress — might be stuck
+        if dist_moved < 0.02 {
             self.stuck_count += 1;
         } else {
             self.stuck_count = 0;

@@ -2,34 +2,36 @@
 //! subsumption.rs — COVEN Subsumption Architecture
 //!
 //! Layered reactive behavioral architecture per Brooks (1986), adapted for
-//! COVEN rover autonomy. Higher-numbered layers subsume (override) lower
-//! layers when active; lower layers serve as automatic fallbacks.
+//! COVEN rover autonomy. Layers compose — each builds on the layers below it.
+//! Lower layers are always running; higher layers selectively override or
+//! absorb parts of lower layers' output.
 //!
 //! ## Layer Hierarchy (per thesis Section 2.2.3)
 //!
-//! | Priority | Layer              | Role                                      |
-//! |----------|--------------------|-------------------------------------------|
-//! | L0       | Obstacle Avoidance | LiDAR safety — always active, constrains  |
-//! | L1       | Return to Dock     | Default fallback — come home               |
-//! | L2       | Wander & Collect   | Opportunistic data — scenic return         |
-//! | L3       | Navigate to Goal   | Potential field to dock-assigned frontier   |
-//! | L4       | Execute Task       | Polymorphic — varies by rover type          |
+//! | Layer | Role                   | Composition                              |
+//! |-------|------------------------|------------------------------------------|
+//! | L0    | Obstacle Avoidance     | Repulsive potential field — always active |
+//! | L1    | Return to Dock         | Attractive field toward dock (baseline)   |
+//! | L2    | Wander & Collect       | Gap-following, overrides L1 when active   |
+//! | L3    | Navigate to Goal       | Attractive field toward assigned frontier  |
+//! | L4    | Execute Task           | Polymorphic — varies by rover type         |
 //!
-//! ## Degradation Cascade
+//! ## Thesis Decomposition
 //!
-//! Task fail → hold position (L3), nav fail → wander (L2),
-//! resource depletion → return to dock (L1), with obstacle avoidance (L0)
-//! active throughout. Every failure mode resolves to a safe behavior.
+//! The Lyapunov potential field is decomposed across layers:
+//! - L0 = repulsive component (always active, constrains all)
+//! - L1/L2/L3 = which attractive target to use (priority arbitrated)
+//! - L4 = polymorphic task behavior on top
 //!
-//! ## Design Notes
+//! Per thesis: "the attractive component implements L3 (navigate to goal)
+//! while the repulsive component implements L0 (obstacle avoidance)."
 //!
-//! - L0 is always-on: if an obstacle is within `d_safe`, ALL motion stops.
-//! - L4–L1 are evaluated highest-priority first; first active layer wins.
-//! - L3 and L4 pass through the pre-computed WaypointFollower velocity.
-//! - L2 computes gap-following velocity from LiDAR for opportunistic wandering.
-//! - L1 owns a LyapunovNavigator that drives toward the dock.
-//! - L4 is the polymorphic layer: for a mapping rover it's a pass-through;
-//!   future rover types (drill, spectrometer) override with task-specific behavior.
+//! ## Arbiter Model
+//!
+//! 1. Always compute L0 repulsive velocity from LiDAR
+//! 2. Evaluate L4→L3→L2→L1 for behavioral velocity (first active wins)
+//! 3. Combine: final = behavioral + L0 repulsive, clamped to limits
+//! 4. Emergency: if within d_safe, L0 overrides everything with escape velocity
 //!
 //! Author: Alexander Shultis
 //! Date: March 2026
@@ -40,7 +42,7 @@ use crate::navigation::{LyapunovNavigator, NavParams, VelocityCmd};
 // --- Data Structures ---
 // ------------------------
 
-/// Output from a behavior layer evaluation.
+/// Output from a behavioral layer evaluation (L1–L4).
 #[derive(Debug, Clone)]
 pub struct LayerOutput {
     /// Velocity command (None = this layer has no opinion).
@@ -50,7 +52,7 @@ pub struct LayerOutput {
 }
 
 impl LayerOutput {
-    /// Layer is inactive — no command, doesn't suppress lower layers.
+    /// Layer is inactive — no command, doesn't affect output.
     pub fn inactive() -> Self {
         Self {
             cmd: None,
@@ -58,13 +60,24 @@ impl LayerOutput {
         }
     }
 
-    /// Layer is active and emitting a command — suppresses all lower layers.
-    pub fn suppress(cmd: VelocityCmd) -> Self {
+    /// Layer is active and emitting a command.
+    pub fn active(cmd: VelocityCmd) -> Self {
         Self {
             cmd: Some(cmd),
             active: true,
         }
     }
+}
+
+/// Output from L0 obstacle avoidance — always computed.
+#[derive(Debug, Clone, Copy)]
+pub enum ObstacleOutput {
+    /// No obstacles within influence distance — no constraint.
+    Clear,
+    /// Obstacles within d_influence — repulsive velocity to sum with behavioral.
+    Constrain(VelocityCmd),
+    /// Obstacle within d_safe — EMERGENCY override, replaces everything.
+    Emergency(VelocityCmd),
 }
 
 /// Sensor and state context passed to each behavior layer for evaluation.
@@ -97,8 +110,8 @@ pub struct LayerContext {
     /// Battery threshold below which rover should return to dock.
     pub low_battery_threshold: f64,
 
-    /// Pre-computed velocity from WaypointFollower (None if no scan or no goal).
-    pub nav_cmd: Option<VelocityCmd>,
+    /// Pre-computed attractive velocity from WaypointFollower (goal-seeking only).
+    pub nav_cmd: VelocityCmd,
     /// Whether WaypointFollower is actively navigating toward a goal.
     pub has_goal: bool,
 
@@ -115,7 +128,10 @@ pub struct LayerContext {
 // --- Behavior Trait ---
 // ------------------------
 
-/// A behavior layer in the subsumption hierarchy.
+/// A behavioral layer in the subsumption hierarchy (L1–L4).
+///
+/// L0 is handled separately by the arbiter since it composes with
+/// (rather than competes against) the behavioral layers.
 pub trait BehaviorLayer {
     /// Human-readable name for logging/debugging.
     #[allow(dead_code)]
@@ -128,33 +144,91 @@ pub trait BehaviorLayer {
     fn evaluate(&mut self, ctx: &LayerContext) -> LayerOutput;
 }
 
-// ------------------------
-// --- L0: Obstacle Avoidance ---
-// ------------------------
+// ----------------------------------------
+// --- L0: Obstacle Avoidance (Repulsive) ---
+// ----------------------------------------
 
-/// L0 — Obstacle avoidance (always active, constrains all layers).
+/// L0 — Obstacle avoidance via Lyapunov repulsive potential field.
 ///
-/// The foundational layer. When the closest LiDAR reading drops below
-/// `d_safe`, all motion is suppressed with a hard stop. This layer
-/// cannot be overridden — every other behavior is constrained by
-/// collision safety.
-pub struct ObstacleAvoidanceLayer;
+/// Per thesis: "The foundational layer. This layer processes LiDAR readings
+/// and generates repulsive responses to nearby surfaces. It is always active
+/// and cannot be overridden — every other behavior is constrained by
+/// collision safety."
+///
+/// L0 IS the repulsive component of the Lyapunov potential field. It is
+/// always computed and always applied. The arbiter sums L0's repulsive
+/// velocity with the winning behavioral layer's attractive velocity.
+///
+/// Two modes:
+/// - **Constrain** (d_safe < obstacle < d_influence): repulsive velocity
+///   summed with behavioral velocity — smoothly deflects the rover.
+/// - **Emergency** (obstacle < d_safe): overrides everything with escape
+///   velocity — turns toward clearest direction and backs away.
+pub struct ObstacleAvoidanceLayer {
+    /// Navigator instance for repulsive force computation.
+    /// Uses the same potential field math as the Lyapunov navigator.
+    navigator: LyapunovNavigator,
+}
 
-impl BehaviorLayer for ObstacleAvoidanceLayer {
-    fn name(&self) -> &'static str {
-        "L0:ObstacleAvoidance"
-    }
-
-    fn priority(&self) -> u8 {
-        0
-    }
-
-    fn evaluate(&mut self, ctx: &LayerContext) -> LayerOutput {
-        if ctx.min_range > 0.0 && ctx.min_range < ctx.d_safe {
-            LayerOutput::suppress(VelocityCmd::stop())
-        } else {
-            LayerOutput::inactive()
+impl ObstacleAvoidanceLayer {
+    /// Create L0 with navigation parameters.
+    fn new(params: NavParams) -> Self {
+        Self {
+            navigator: LyapunovNavigator::with_params(params),
         }
+    }
+
+    /// Compute L0 repulsive output from current LiDAR data.
+    ///
+    /// Always called by the arbiter — L0 is never "inactive."
+    fn evaluate(&self, ctx: &LayerContext) -> ObstacleOutput {
+        if ctx.lidar_ranges.is_empty() {
+            return ObstacleOutput::Clear;
+        }
+
+        // Emergency: obstacle within d_safe — override everything
+        if ctx.min_range > 0.0 && ctx.min_range < ctx.d_safe {
+            let escape = self.navigator.compute_escape_velocity(
+                ctx.robot_theta,
+                &ctx.lidar_ranges,
+                ctx.lidar_angle_min,
+                ctx.lidar_angle_increment,
+            );
+            return ObstacleOutput::Emergency(escape);
+        }
+
+        // Compute repulsive force from all obstacles within d_influence
+        let (f_rep_x, f_rep_y) = self.navigator.compute_repulsive_force(
+            ctx.robot_theta,
+            &ctx.lidar_ranges,
+            ctx.lidar_angle_min,
+            ctx.lidar_angle_increment,
+        );
+
+        // If repulsive force is negligible, no constraint needed
+        let force_mag = (f_rep_x * f_rep_x + f_rep_y * f_rep_y).sqrt();
+        if force_mag < 0.01 {
+            return ObstacleOutput::Clear;
+        }
+
+        // Convert repulsive force (world frame) to velocity (robot frame)
+        let cos_theta = ctx.robot_theta.cos();
+        let sin_theta = ctx.robot_theta.sin();
+        let f_robot_x = f_rep_x * cos_theta + f_rep_y * sin_theta;
+        let f_robot_y = -f_rep_x * sin_theta + f_rep_y * cos_theta;
+
+        let desired_heading = f_robot_y.atan2(f_robot_x);
+
+        // Linear: forward component of repulsive force
+        // Can be negative (backing away from obstacle ahead)
+        let params = self.navigator.params();
+        let linear = f_robot_x.clamp(-params.max_linear * 0.5, params.max_linear);
+
+        // Angular: steer away from obstacles
+        let angular = (params.k_heading * desired_heading)
+            .clamp(-params.max_angular, params.max_angular);
+
+        ObstacleOutput::Constrain(VelocityCmd { linear, angular })
     }
 }
 
@@ -167,7 +241,7 @@ impl BehaviorLayer for ObstacleAvoidanceLayer {
 /// For a mapping/reconnaissance rover, task execution IS navigation with
 /// continuous LiDAR scanning — the sensor batch pipeline runs regardless
 /// of which layer controls velocity. L4 passes through the WaypointFollower
-/// velocity during an active mission.
+/// attractive velocity during an active mission.
 ///
 /// Future rover types (drill, spectrometer) would override this layer with
 /// task-specific behavior at the goal coordinate. This is where OOP
@@ -185,9 +259,7 @@ impl BehaviorLayer for ExecuteTaskLayer {
 
     fn evaluate(&mut self, ctx: &LayerContext) -> LayerOutput {
         if ctx.has_mission && ctx.has_goal {
-            if let Some(cmd) = ctx.nav_cmd {
-                return LayerOutput::suppress(cmd);
-            }
+            return LayerOutput::active(ctx.nav_cmd);
         }
         LayerOutput::inactive()
     }
@@ -197,11 +269,11 @@ impl BehaviorLayer for ExecuteTaskLayer {
 // --- L3: Navigate to Goal ---
 // ------------------------
 
-/// L3 — Navigate to dock-assigned frontier via potential field.
+/// L3 — Navigate to dock-assigned frontier via attractive potential.
 ///
-/// Active when a goal exists (even without an active mission — e.g.,
-/// a rover directed to a coordinate for any reason). Passes through
-/// the pre-computed WaypointFollower velocity.
+/// Per thesis: "the attractive component implements L3 (navigate to goal)."
+/// Active when a goal exists (even without an active mission). Passes
+/// through the WaypointFollower's attractive-only velocity.
 pub struct NavigateToGoalLayer;
 
 impl BehaviorLayer for NavigateToGoalLayer {
@@ -215,9 +287,7 @@ impl BehaviorLayer for NavigateToGoalLayer {
 
     fn evaluate(&mut self, ctx: &LayerContext) -> LayerOutput {
         if ctx.has_goal {
-            if let Some(cmd) = ctx.nav_cmd {
-                return LayerOutput::suppress(cmd);
-            }
+            return LayerOutput::active(ctx.nav_cmd);
         }
         LayerOutput::inactive()
     }
@@ -229,11 +299,13 @@ impl BehaviorLayer for NavigateToGoalLayer {
 
 /// L2 — Wander and collect opportunistic sensor data.
 ///
-/// When no goal is assigned but the rover has adequate battery and
-/// functional sensors, it wanders by following the widest gap in
-/// LiDAR — exploring unvisited space while collecting scans that
-/// contribute to the global map. This transforms dead-heading into
-/// productive data collection.
+/// Per thesis: "this layer replaces direct return-to-dock with undirected
+/// exploration. The rover is still broadly returning to the dock, but it
+/// takes the scenic route — and every meter of that route produces LiDAR
+/// scans that contribute to the global map."
+///
+/// Overrides L1's direct dock-return with gap-following exploration.
+/// L0's repulsive field still constrains motion (applied by arbiter).
 pub struct WanderCollectLayer {
     /// Maximum linear velocity for wandering (m/s).
     max_linear: f64,
@@ -324,7 +396,7 @@ impl BehaviorLayer for WanderCollectLayer {
             && !ctx.lidar_ranges.is_empty()
         {
             let cmd = self.gap_follow(ctx);
-            LayerOutput::suppress(cmd)
+            LayerOutput::active(cmd)
         } else {
             LayerOutput::inactive()
         }
@@ -337,12 +409,11 @@ impl BehaviorLayer for WanderCollectLayer {
 
 /// L1 — Return to dock (lowest priority, always-on fallback).
 ///
-/// A rover with no active task, exhausted sensors, or insufficient
-/// battery navigates toward the dock. This is the rover's baseline
-/// state: when all higher-level purposes are exhausted, it returns
-/// home with whatever data it has collected.
+/// Per thesis: "L1 sets the dock as the attractor." Provides the attractive
+/// component toward the dock position. L0 handles obstacle avoidance
+/// (repulsive component) via the arbiter's composition step.
 pub struct ReturnToDockLayer {
-    /// Navigator for computing velocity toward dock.
+    /// Navigator for computing attractive velocity toward dock.
     navigator: LyapunovNavigator,
 }
 
@@ -365,7 +436,7 @@ impl BehaviorLayer for ReturnToDockLayer {
     }
 
     fn evaluate(&mut self, ctx: &LayerContext) -> LayerOutput {
-        // Need LiDAR to navigate safely
+        // Need LiDAR to navigate safely (L0 needs it for obstacle avoidance)
         if ctx.lidar_ranges.is_empty() {
             return LayerOutput::inactive();
         }
@@ -378,17 +449,14 @@ impl BehaviorLayer for ReturnToDockLayer {
             return LayerOutput::inactive();
         }
 
-        // Navigate toward dock
-        let cmd = self.navigator.compute_velocity(
+        // Compute attractive-only velocity toward dock
+        let cmd = self.navigator.compute_attractive_velocity(
             ctx.robot_x,
             ctx.robot_y,
             ctx.robot_theta,
-            &ctx.lidar_ranges,
-            ctx.lidar_angle_min,
-            ctx.lidar_angle_increment,
         );
 
-        LayerOutput::suppress(cmd)
+        LayerOutput::active(cmd)
     }
 }
 
@@ -396,24 +464,36 @@ impl BehaviorLayer for ReturnToDockLayer {
 // --- Arbiter ---
 // ------------------------
 
-/// Subsumption arbiter — evaluates layers by priority, first active wins.
+/// Subsumption arbiter — composes layers per Brooks (1986).
 ///
-/// Layers are evaluated in priority order (L0 first, then L4, L3, L2, L1).
-/// L0 (obstacle avoidance) is the emergency override — if active, it
-/// suppresses everything. Otherwise, the first active layer among L4–L1
-/// wins and its velocity command is used.
+/// Per thesis: the Lyapunov potential field is decomposed across layers.
+/// L0 (repulsive) is always active and constrains all behavioral layers.
+/// L4→L3→L2→L1 are evaluated by priority for the attractive/behavioral
+/// component. The arbiter combines them:
 ///
-/// If no layer is active (e.g., no LiDAR data), the arbiter returns
-/// `VelocityCmd::stop()` — the safest default.
+/// - Normal: final = behavioral + L0_repulsive, clamped to limits
+/// - Emergency (d_safe violation): L0 overrides everything with escape velocity
+/// - No layers active: stop (safe default)
 pub struct SubsumptionArbiter {
+    /// L0: obstacle avoidance — always active, constrains all layers.
+    obstacle_avoidance: ObstacleAvoidanceLayer,
+    /// Behavioral layers L4→L3→L2→L1 evaluated by priority.
     layers: Vec<Box<dyn BehaviorLayer>>,
+    /// Maximum linear velocity for clamping (m/s).
+    max_linear: f64,
+    /// Maximum angular velocity for clamping (rad/s).
+    max_angular: f64,
 }
 
 impl SubsumptionArbiter {
     /// Create a new arbiter with the COVEN layer stack.
     pub fn new(params: NavParams) -> Self {
+        let max_linear = params.max_linear;
+        let max_angular = params.max_angular;
+
+        let obstacle_avoidance = ObstacleAvoidanceLayer::new(params.clone());
+
         let mut layers: Vec<Box<dyn BehaviorLayer>> = vec![
-            Box::new(ObstacleAvoidanceLayer),            // L0: priority 0
             Box::new(ExecuteTaskLayer),                  // L4: priority 1
             Box::new(NavigateToGoalLayer),               // L3: priority 2
             Box::new(WanderCollectLayer::new(&params)),  // L2: priority 3
@@ -421,23 +501,53 @@ impl SubsumptionArbiter {
         ];
         // Sort by priority (should already be in order, but enforce it)
         layers.sort_by_key(|l| l.priority());
-        Self { layers }
+
+        Self {
+            obstacle_avoidance,
+            layers,
+            max_linear,
+            max_angular,
+        }
     }
 
-    /// Evaluate all layers and return the winning velocity command.
+    /// Evaluate all layers and return the composed velocity command.
     ///
-    /// Returns the command from the highest-priority active layer,
-    /// or `VelocityCmd::stop()` if no layer is active.
+    /// Two-phase composition per thesis:
+    /// 1. L0 repulsive field (always computed)
+    /// 2. Behavioral layer arbitration (L4→L3→L2→L1, first active wins)
+    /// 3. Combine: behavioral + repulsive, clamped
     pub fn evaluate(&mut self, ctx: &LayerContext) -> VelocityCmd {
+        // Phase 1: L0 — always compute repulsive constraint
+        let l0_output = self.obstacle_avoidance.evaluate(ctx);
+
+        // If L0 emergency (within d_safe) — override everything
+        if let ObstacleOutput::Emergency(escape) = l0_output {
+            return escape;
+        }
+
+        // Phase 2: Behavioral layer arbitration (L4→L3→L2→L1)
+        let mut behavioral = VelocityCmd::stop();
         for layer in &mut self.layers {
             let output = layer.evaluate(ctx);
             if output.active {
                 if let Some(cmd) = output.cmd {
-                    return cmd;
+                    behavioral = cmd;
+                    break;
                 }
             }
         }
-        // No layer active — stop (safe default)
-        VelocityCmd::stop()
+
+        // Phase 3: Compose — behavioral + L0 repulsive, clamped
+        match l0_output {
+            ObstacleOutput::Constrain(repulsive) => {
+                let linear = (behavioral.linear + repulsive.linear)
+                    .clamp(-self.max_linear, self.max_linear);
+                let angular = (behavioral.angular + repulsive.angular)
+                    .clamp(-self.max_angular, self.max_angular);
+                VelocityCmd { linear, angular }
+            }
+            ObstacleOutput::Clear => behavioral,
+            ObstacleOutput::Emergency(_) => unreachable!(),
+        }
     }
 }

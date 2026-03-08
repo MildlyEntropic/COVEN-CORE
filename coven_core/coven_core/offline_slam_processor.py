@@ -203,7 +203,7 @@ class OfflineSLAMProcessor(Node):
 
         frames = mission_data.get('frames', [])
         if not frames:
-            self.get_logger().warn('[OfflineSLAM] No frames in mission data')
+            self.get_logger().warning('[OfflineSLAM] No frames in mission data')
             self._finish_processing()
             return
 
@@ -360,7 +360,7 @@ class OfflineSLAMProcessor(Node):
         Before saving new map, renames existing Map.pgm to Map.{elapsed}.{rover}.pgm
         """
         if not self.current_slam_dir:
-            self.get_logger().warn('[OfflineSLAM] No SLAM directory set, skipping map save')
+            self.get_logger().warning('[OfflineSLAM] No SLAM directory set, skipping map save')
             return
 
         import subprocess
@@ -387,7 +387,7 @@ class OfflineSLAMProcessor(Node):
                 shutil.move(f'{current_map_path}.yaml', f'{archive_map_path}.yaml')
                 self.get_logger().info(f'[OfflineSLAM] Archived previous map to Map.{elapsed_str}.{module_id}')
             except Exception as e:
-                self.get_logger().warn(f'[OfflineSLAM] Failed to archive previous map: {e}')
+                self.get_logger().warning(f'[OfflineSLAM] Failed to archive previous map: {e}')
 
         # Wait for SLAM to finish processing
         self.get_logger().info(f'[OfflineSLAM] Waiting for SLAM to process, then saving to {current_map_path}...')
@@ -407,9 +407,9 @@ class OfflineSLAMProcessor(Node):
             if result.returncode == 0:
                 self.get_logger().info(f'[OfflineSLAM] Map saved: {current_map_path}.pgm/.yaml')
             else:
-                self.get_logger().warn(f'[OfflineSLAM] Map save may have failed: {result.stderr[:200] if result.stderr else "no error output"}')
+                self.get_logger().warning(f'[OfflineSLAM] Map save may have failed: {result.stderr[:200] if result.stderr else "no error output"}')
         except subprocess.TimeoutExpired:
-            self.get_logger().warn('[OfflineSLAM] Map save timed out')
+            self.get_logger().warning('[OfflineSLAM] Map save timed out')
         except Exception as e:
             self.get_logger().error(f'[OfflineSLAM] Map save error: {e}')
 

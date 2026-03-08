@@ -67,6 +67,27 @@ def generate_launch_description():
     data_dir = LaunchConfiguration('data_dir')
 
     # ========================
+    # Rover Bridge
+    # ========================
+
+    # Bridges Rust rovers to ROS2 via serial UART connection.
+    # Manages COVEN handshake, translates sensor data to ROS2 topics,
+    # and dispatches tasks to rovers via the auctioneer.
+    rover_bridge_node = Node(
+        package='coven_core',
+        executable='rover_bridge',
+        name='rover_bridge',
+        output='screen',
+        parameters=[{
+            'use_sim_time': False,
+            'coven_name': coven_name,
+            'dock_position_x': dock_x,
+            'dock_position_y': dock_y,
+            'data_dir': data_dir,
+        }],
+    )
+
+    # ========================
     # Frontier Dispatcher
     # ========================
 
@@ -167,6 +188,7 @@ def generate_launch_description():
         LogInfo(msg=['Data directory: ', data_dir]),
 
         # Nodes
+        rover_bridge_node,
         dispatcher_node,
         slam_processor_node,
         slam_node,

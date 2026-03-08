@@ -219,7 +219,9 @@ impl BatteryReader {
             .write_read(&[ADS_CONVERSION_REG], &mut buf)
             .context("Failed to read ADC conversion")?;
 
-        // Convert to voltage (ADS1115 is 16-bit, ADS1015 is 12-bit left-aligned)
+        // Convert to voltage
+        // ADS1115: 16-bit, ADS1015: 12-bit left-aligned into 16 bits
+        // Both work with the same LSB since ADS1015 left-aligns (just less precise)
         let raw = i16::from_be_bytes(buf);
         // For PGA = 4.096V, LSB = 4.096 / 32768 = 0.000125V
         let adc_voltage = raw as f64 * 0.000125;

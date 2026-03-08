@@ -41,6 +41,7 @@ MSG_IDENTIFY_REQUEST = 0x01   # dock -> rover
 MSG_IDENTIFY_REPLY = 0x02     # rover -> dock
 MSG_VERIFY_OK = 0x03          # dock -> rover
 MSG_VERIFY_FAIL = 0x04        # dock -> rover
+MSG_IDENTIFY_ACK = 0x05       # dock -> rover
 MSG_DATA_FRAME = 0x10         # bidirectional
 MSG_MODULE_HEARTBEAT = 0x20   # rover -> dock
 MSG_FAULT_ALERT = 0x30        # rover -> dock
@@ -125,7 +126,7 @@ def _cobs_encode(data: bytes) -> bytes:
     output = bytearray()
     idx = 0
 
-    while idx <= len(data):
+    while idx < len(data):
         # Find next zero byte (or end of data)
         next_zero = data.find(b'\x00', idx)
         if next_zero == -1:
@@ -330,6 +331,31 @@ def encode_identify_request(
     payload.extend(name_bytes)
 
     return build_frame(MSG_IDENTIFY_REQUEST, bytes(payload))
+
+
+def encode_identify_ack(
+    dock_id: str, assigned_name: str, message: str = "Welcome"
+) -> bytes:
+    """Build IDENTIFY_ACK frame (dock -> rover).
+
+    Sent after receiving IDENTIFY_REPLY to confirm the rover's final name.
+    Matches parse_identify_ack() in dock_uart.rs.
+    """
+    payload = bytearray()
+
+    dock_id_bytes = dock_id.encode('utf-8')
+    payload.append(len(dock_id_bytes))
+    payload.extend(dock_id_bytes)
+
+    name_bytes = assigned_name.encode('utf-8')
+    payload.append(len(name_bytes))
+    payload.extend(name_bytes)
+
+    msg_bytes = message.encode('utf-8')
+    payload.append(len(msg_bytes))
+    payload.extend(msg_bytes)
+
+    return build_frame(MSG_IDENTIFY_ACK, bytes(payload))
 
 
 def encode_verify_ok(dock_id: str, module_id: str) -> bytes:

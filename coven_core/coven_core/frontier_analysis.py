@@ -107,34 +107,46 @@ def analyze_frontiers(
     return frontiers
 
 
+def _bfs_expand(cells, seed, used, threshold_sq):
+    """Expand a cluster from seed via BFS, marking visited cells."""
+    cluster = [cells[seed]]
+    used[seed] = True
+    queue = [seed]
+
+    while queue:
+        cx, cy = cells[queue.pop(0)]
+        for j in range(len(cells)):
+            if used[j]:
+                continue
+            dx = cx - cells[j][0]
+            dy = cy - cells[j][1]
+            if dx * dx + dy * dy < threshold_sq:
+                cluster.append(cells[j])
+                used[j] = True
+                queue.append(j)
+
+    return cluster
+
+
 def cluster_frontiers(
     cells: List[Tuple[float, float]],
     threshold: float = 0.5,
 ) -> List[List[Tuple[float, float]]]:
-    """Simple clustering of frontier cells by proximity."""
+    """Cluster frontier cells by proximity using BFS flood-fill.
+
+    Transitive: if A is near B and B is near C, all three are in the same
+    cluster even if A is not near C.
+    """
     if not cells:
         return []
 
     clusters: List[List[Tuple[float, float]]] = []
     used = [False] * len(cells)
+    threshold_sq = threshold * threshold
 
-    for i, cell in enumerate(cells):
-        if used[i]:
-            continue
-
-        cluster = [cell]
-        used[i] = True
-
-        for j, other in enumerate(cells):
-            if used[j]:
-                continue
-            dx = cell[0] - other[0]
-            dy = cell[1] - other[1]
-            if math.sqrt(dx*dx + dy*dy) < threshold:
-                cluster.append(other)
-                used[j] = True
-
-        clusters.append(cluster)
+    for i in range(len(cells)):
+        if not used[i]:
+            clusters.append(_bfs_expand(cells, i, used, threshold_sq))
 
     return clusters
 

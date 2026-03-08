@@ -84,7 +84,7 @@ impl MockHardware {
             v_angular: 0.0,
             wheel_base: 0.298,
             wheel_radius: 0.1,
-            ticks_per_rev: 1632, // JGA25-371: 408 PPR * 4 quadrature
+            ticks_per_rev: 816, // JGA25-371: 408 PPR * X2 quadrature
             left_ticks_accum: 0.0,
             right_ticks_accum: 0.0,
             last_left_ticks: 0,

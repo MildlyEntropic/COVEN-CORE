@@ -5,9 +5,11 @@
 rover_id = "Morgan_Le_Fay"
 coven_name = "The_Graeae"
 
-# Dock UART (USB gadget serial for MVP, physical 9-pin connector later)
+# Dock UART
+# MVP: USB gadget serial (/dev/ttyGS0) — hand-plugged USB cable
+# Production: GPIO UART (/dev/ttyAMA0) — 9-pin magnetic connector
 [dock_uart]
-port = "/dev/ttyGS0"       # USB gadget serial on Pi Zero 2W
+port = "/dev/ttyGS0"       # USB gadget serial (MVP)
 baud_rate = 115200
 
 [hardware.motors]

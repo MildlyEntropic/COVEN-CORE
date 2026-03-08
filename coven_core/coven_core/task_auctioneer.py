@@ -218,6 +218,7 @@ class Mission:
     auction_start: Optional[float] = None
     bids: Dict[str, int] = field(default_factory=dict)  # module_id -> bid
     assigned_to: Optional[str] = None
+    dispatched_at: Optional[float] = None
     completed: bool = False
     success: Optional[bool] = None
 
@@ -265,7 +266,7 @@ class TaskAuctioneer:
         self.dock_position = dock_position
         self.bid_timeout = bid_timeout
 
-        # State
+        # State (all protected by _lock)
         self.rovers: Dict[str, RoverInfo] = {}
         self.mission_queue: List[Mission] = []
         self.active_missions: Dict[str, Mission] = {}  # mission_id -> Mission
@@ -273,7 +274,7 @@ class TaskAuctioneer:
 
         # Current auction
         self.current_auction: Optional[Mission] = None
-        self.auction_lock = threading.Lock()
+        self._lock = threading.Lock()
 
         # Callbacks
         self._send_task_callback: Optional[callable] = None
@@ -294,22 +295,23 @@ class TaskAuctioneer:
         **kwargs
     ) -> RoverInfo:
         """Register a new rover or update existing."""
-        if module_id not in self.rovers:
-            self.rovers[module_id] = RoverInfo(
-                module_id=module_id,
-                payload=payload,
-                **kwargs
-            )
-            logger.info(f"Registered rover: {module_id} (payload={payload.value}, caps=0x{self.rovers[module_id].capabilities:02x})")
-        else:
-            # Update existing
-            rover = self.rovers[module_id]
-            rover.payload = payload
-            for key, value in kwargs.items():
-                if hasattr(rover, key):
-                    setattr(rover, key, value)
-            rover.last_heartbeat = time.time()
-        return self.rovers[module_id]
+        with self._lock:
+            if module_id not in self.rovers:
+                self.rovers[module_id] = RoverInfo(
+                    module_id=module_id,
+                    payload=payload,
+                    **kwargs
+                )
+                logger.info(f"Registered rover: {module_id} (payload={payload.value}, caps=0x{self.rovers[module_id].capabilities:02x})")
+            else:
+                # Update existing
+                rover = self.rovers[module_id]
+                rover.payload = payload
+                for key, value in kwargs.items():
+                    if hasattr(rover, key):
+                        setattr(rover, key, value)
+                rover.last_heartbeat = time.time()
+            return self.rovers[module_id]
 
     def update_rover_status(
         self,
@@ -320,33 +322,36 @@ class TaskAuctioneer:
         heading: Optional[float] = None,
     ):
         """Update rover status from heartbeat."""
-        if module_id not in self.rovers:
-            self.register_rover(module_id)
+        with self._lock:
+            if module_id not in self.rovers:
+                self.rovers[module_id] = RoverInfo(module_id=module_id)
+                logger.info(f"Registered rover: {module_id} (from heartbeat)")
 
-        rover = self.rovers[module_id]
-        rover.status = status
-        rover.last_heartbeat = time.time()
+            rover = self.rovers[module_id]
+            rover.status = status
+            rover.last_heartbeat = time.time()
 
-        if battery_pct is not None:
-            rover.battery_pct = battery_pct
-        if position is not None:
-            rover.position = position
-        if heading is not None:
-            rover.heading = heading
+            if battery_pct is not None:
+                rover.battery_pct = battery_pct
+            if position is not None:
+                rover.position = position
+            if heading is not None:
+                rover.heading = heading
 
-        logger.debug(
-            f"Rover {module_id}: status={status.value}, "
-            f"battery={rover.battery_pct:.1f}%"
-        )
+            logger.debug(
+                f"Rover {module_id}: status={status.value}, "
+                f"battery={rover.battery_pct:.1f}%"
+            )
 
     def queue_mission(self, mission: Mission):
         """Add a mission to the queue."""
-        self.mission_queue.append(mission)
-        self.mission_queue.sort(key=lambda m: -m.priority)  # Higher priority first
-        logger.info(
-            f"Queued mission {mission.mission_id} "
-            f"(type={mission.task_type.value}, priority={mission.priority})"
-        )
+        with self._lock:
+            self.mission_queue.append(mission)
+            self.mission_queue.sort(key=lambda m: -m.priority)  # Higher priority first
+            logger.info(
+                f"Queued mission {mission.mission_id} "
+                f"(type={mission.task_type.value}, priority={mission.priority})"
+            )
 
     def create_exploration_mission(
         self,
@@ -364,24 +369,29 @@ class TaskAuctioneer:
         self.queue_mission(mission)
         return mission
 
-    def get_idle_rovers(self) -> List[RoverInfo]:
-        """Get list of rovers ready for assignment."""
+    def _get_idle_rovers(self) -> List[RoverInfo]:
+        """Get list of rovers ready for assignment (caller must hold _lock)."""
         return [
             r for r in self.rovers.values()
             if r.status == RoverStatus.IDLE
         ]
+
+    def get_idle_rovers(self) -> List[RoverInfo]:
+        """Get list of rovers ready for assignment."""
+        with self._lock:
+            return self._get_idle_rovers()
 
     def try_dispatch(self) -> bool:
         """
         Attempt to dispatch next mission to an available rover.
         Returns True if a mission was dispatched.
         """
-        with self.auction_lock:
+        with self._lock:
             # Check preconditions
             if not self.mission_queue:
                 return False
 
-            idle_rovers = self.get_idle_rovers()
+            idle_rovers = self._get_idle_rovers()
             if not idle_rovers:
                 return False
 
@@ -417,6 +427,7 @@ class TaskAuctioneer:
             # Assign mission
             self.mission_queue.pop(0)
             mission.assigned_to = winner.module_id
+            mission.dispatched_at = time.time()
             winner.status = RoverStatus.ASSIGNED
             winner.current_mission = mission.mission_id
 
@@ -486,49 +497,87 @@ class TaskAuctioneer:
         duration: float,
     ):
         """Handle mission completion from rover."""
-        if task_id not in self.active_missions:
-            logger.warning(f"Unknown mission completed: {task_id}")
-            return
+        with self._lock:
+            if task_id not in self.active_missions:
+                logger.warning(f"Unknown mission completed: {task_id}")
+                return
 
-        mission = self.active_missions.pop(task_id)
-        mission.completed = True
-        mission.success = success
-        self.completed_missions.append(mission)
+            mission = self.active_missions.pop(task_id)
+            mission.completed = True
+            mission.success = success
+            self.completed_missions.append(mission)
 
-        # Update rover
-        if module_id in self.rovers:
-            rover = self.rovers[module_id]
-            rover.status = RoverStatus.IDLE
-            rover.current_mission = None
-            if success:
-                rover.missions_completed += 1
+            # Update rover
+            if module_id in self.rovers:
+                rover = self.rovers[module_id]
+                rover.status = RoverStatus.IDLE
+                rover.current_mission = None
+                if success:
+                    rover.missions_completed += 1
 
-        logger.info(
-            f"Mission {task_id} {'succeeded' if success else 'failed'} "
-            f"(duration={duration:.1f}s, rover={module_id})"
-        )
+            logger.info(
+                f"Mission {task_id} {'succeeded' if success else 'failed'} "
+                f"(duration={duration:.1f}s, rover={module_id})"
+            )
 
         if self._on_mission_complete_callback:
             self._on_mission_complete_callback(mission, success)
 
+    def check_timeouts(self) -> List[str]:
+        """Check for timed-out missions and mark them as failed.
+
+        Returns list of timed-out mission IDs. Call periodically (e.g., every 10s).
+        """
+        timed_out = []
+        now = time.time()
+
+        with self._lock:
+            for mission_id in list(self.active_missions.keys()):
+                mission = self.active_missions[mission_id]
+                start = mission.dispatched_at or mission.created_at
+                elapsed = now - start
+
+                if elapsed > mission.timeout:
+                    logger.warning(
+                        f"Mission {mission_id} TIMED OUT after {elapsed:.0f}s "
+                        f"(timeout={mission.timeout:.0f}s, rover={mission.assigned_to})"
+                    )
+
+                    # Free the rover
+                    if mission.assigned_to and mission.assigned_to in self.rovers:
+                        rover = self.rovers[mission.assigned_to]
+                        rover.status = RoverStatus.IDLE
+                        rover.current_mission = None
+
+                    # Move to completed as failed
+                    mission.completed = True
+                    mission.success = False
+                    self.completed_missions.append(
+                        self.active_missions.pop(mission_id)
+                    )
+                    timed_out.append(mission_id)
+
+        return timed_out
+
     def get_status(self) -> dict:
         """Get auctioneer status for monitoring."""
-        return {
-            "rovers": {
-                module_id: {
-                    "status": r.status.value,
-                    "payload": r.payload.value,
-                    "battery_pct": r.battery_pct,
-                    "missions_completed": r.missions_completed,
-                    "current_mission": r.current_mission,
-                }
-                for module_id, r in self.rovers.items()
-            },
-            "queue_length": len(self.mission_queue),
-            "active_missions": len(self.active_missions),
-            "completed_missions": len(self.completed_missions),
-            "idle_rovers": len(self.get_idle_rovers()),
-        }
+        with self._lock:
+            return {
+                "rovers": {
+                    module_id: {
+                        "status": r.status.value,
+                        "payload": r.payload.value,
+                        "battery_pct": r.battery_pct,
+                        "missions_completed": r.missions_completed,
+                        "current_mission": r.current_mission,
+                    }
+                    for module_id, r in self.rovers.items()
+                },
+                "queue_length": len(self.mission_queue),
+                "active_missions": len(self.active_missions),
+                "completed_missions": len(self.completed_missions),
+                "idle_rovers": len(self._get_idle_rovers()),
+            }
 
 
 # Helper for generating test missions

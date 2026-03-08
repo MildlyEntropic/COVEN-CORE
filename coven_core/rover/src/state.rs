@@ -43,7 +43,7 @@ use crate::config::RoverConfig;
 use crate::dock_uart::DockUart;
 use crate::hardware::{BatteryReader, Hardware};
 use crate::lidar::LidarDriver;
-use crate::navigation::{NavParams, NavState, WaypointFollower};
+use crate::navigation::{NavParams, NavState, VelocityCmd, WaypointFollower};
 use crate::subsumption::{LayerContext, SubsumptionArbiter};
 use crate::protocol::{
     DockMessage, RawSensorSample, RoverMessage, RoverState, SensorBatch,
@@ -276,9 +276,10 @@ impl RoverStateMachine {
                     // Wait for IDENTIFY_REQ from dock
                     // (handled in handle_dock_message)
 
-                    // Timeout after 30 seconds - connection may have failed
+                    // Timeout after 30 seconds - dock didn't send IDENTIFY_REQ
                     if self.state_entered_at.elapsed() > Duration::from_secs(30) {
-                        warn!("Identify timeout - no response from dock, retrying connection");
+                        warn!("Identify timeout - no response from dock, reconnecting");
+                        self.dock.disconnect().await;
                         self.dock.connect().await?;
                         self.state_entered_at = Instant::now();
                     }
@@ -296,7 +297,39 @@ impl RoverStateMachine {
                 }
 
                 RoverState::Normal => {
-                    // Ready for tasks, send periodic heartbeats
+                    // No mission — arbiter runs L2 (wander) / L1 (return to dock)
+
+                    let min_range = scan.as_ref()
+                        .map(|s| s.ranges.iter()
+                            .filter(|r| r.is_finite() && **r > 0.0)
+                            .cloned()
+                            .fold(f64::INFINITY, f64::min))
+                        .unwrap_or(f64::INFINITY);
+
+                    let ctx = LayerContext {
+                        robot_x: odom.x,
+                        robot_y: odom.y,
+                        robot_theta: odom.theta,
+                        lidar_ranges: scan.as_ref()
+                            .map(|s| s.ranges.clone())
+                            .unwrap_or_default(),
+                        min_range,
+                        lidar_angle_min: scan.as_ref()
+                            .map(|s| s.angle_min).unwrap_or(0.0),
+                        lidar_angle_increment: scan.as_ref()
+                            .map(|s| s.angle_increment).unwrap_or(0.0),
+                        d_safe: self.config.navigation.d_safe,
+                        battery_pct: self.battery_pct,
+                        low_battery_threshold: self.config.navigation.low_battery_threshold,
+                        nav_cmd: VelocityCmd::stop(),
+                        has_goal: false,
+                        has_mission: false,
+                        dock_x: 0.0,
+                        dock_y: 0.0,
+                    };
+
+                    let cmd = self.arbiter.evaluate(&ctx);
+                    self.hardware.motors.set_velocity(cmd.linear, cmd.angular);
                 }
 
                 RoverState::FieldOps => {
@@ -357,13 +390,11 @@ impl RoverStateMachine {
 
                     // === SUBSUMPTION NAVIGATION ===
 
-                    // Pre-compute navigation velocity from WaypointFollower
-                    let nav_cmd = scan.as_ref().map(|s| {
-                        self.navigator.update(
-                            odom.x, odom.y, odom.theta,
-                            &s.ranges, s.angle_min, s.angle_increment,
-                        )
-                    });
+                    // Pre-compute attractive velocity from WaypointFollower
+                    // (goal-seeking only — L0 handles obstacle avoidance)
+                    let nav_cmd = self.navigator.update(
+                        odom.x, odom.y, odom.theta,
+                    );
                     let has_goal = self.navigator.has_goal();
 
                     // Build subsumption layer context
@@ -643,8 +674,9 @@ impl RoverStateMachine {
                 // Calculate total path distance for timeout estimation
                 // Path: current position → all waypoints → dock
                 let mut total_distance = 0.0;
-                let mut prev_x = 0.0; // Start at origin (rover frame)
-                let mut prev_y = 0.0;
+                let current_odom = self.hardware.encoders.get_odometry();
+                let mut prev_x = current_odom.x;
+                let mut prev_y = current_odom.y;
 
                 for (wx, wy) in &wp_coords {
                     let dx = wx - prev_x;

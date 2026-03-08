@@ -4,7 +4,7 @@ test_dock_centric.py - Unit tests for dock-centric message types
 Tests message encoding/decoding for dock-centric messages:
 - RoverRegistration / RoverRegistrationAck
 - SensorData, VelocityCommand
-- RoverStatus, DockCommand
+- RoverStatusMsg, DockCommand
 
 Author: Alexander Shultis
 Date: December 2025
@@ -17,7 +17,7 @@ import math
 from coven_core.common import (
     RoverRegistration, RoverRegistrationAck,
     SensorData, VelocityCommand,
-    RoverStatus, DockCommand,
+    RoverStatusMsg, DockCommand,
     rover_registration_encode, rover_registration_decode,
     sensor_data_encode, sensor_data_decode,
     velocity_command_encode, velocity_command_decode,
@@ -165,12 +165,12 @@ class TestVelocityCommandMessage(unittest.TestCase):
         self.assertAlmostEqual(cmd.angular_z, -0.5)
 
 
-class TestRoverStatusMessage(unittest.TestCase):
-    """Test RoverStatus message."""
+class TestRoverStatusMsgMessage(unittest.TestCase):
+    """Test RoverStatusMsg message."""
 
     def test_status_ready(self):
-        """RoverStatus in READY state."""
-        status = RoverStatus(
+        """RoverStatusMsg in READY state."""
+        status = RoverStatusMsg(
             module_id="Rover1",
             state="READY",
             battery_level=0.9,
@@ -181,8 +181,8 @@ class TestRoverStatusMessage(unittest.TestCase):
         self.assertEqual(status.error_msg, "")
 
     def test_status_active(self):
-        """RoverStatus in ACTIVE state."""
-        status = RoverStatus(
+        """RoverStatusMsg in ACTIVE state."""
+        status = RoverStatusMsg(
             module_id="Rover2",
             state="ACTIVE",
             battery_level=0.75,
@@ -194,8 +194,8 @@ class TestRoverStatusMessage(unittest.TestCase):
         self.assertAlmostEqual(status.last_cmd_age, 0.05)
 
     def test_status_error(self):
-        """RoverStatus in ERROR state."""
-        status = RoverStatus(
+        """RoverStatusMsg in ERROR state."""
+        status = RoverStatusMsg(
             module_id="BrokenBot",
             state="ERROR",
             battery_level=0.05,
@@ -280,7 +280,7 @@ class TestWrapperEncodeDecode(unittest.TestCase):
 
     def test_rover_status_wrapper(self):
         """rover_status_encode/decode work correctly."""
-        original = RoverStatus(
+        original = RoverStatusMsg(
             module_id="StatusTest",
             state="ACTIVE",
             is_moving=True

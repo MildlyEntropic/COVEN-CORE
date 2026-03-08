@@ -301,7 +301,7 @@ class RoverBridge(Node):
                                 rover = self.rovers[rover.module_id]
 
             except serial.SerialException as e:
-                self.get_logger().warn(f"Serial read error: {e}")
+                self.get_logger().warning(f"Serial read error: {e}")
                 break
             except Exception as e:
                 self.get_logger().error(f"Frame processing error: {e}")
@@ -380,7 +380,7 @@ class RoverBridge(Node):
                     disconnected.append(module_id)
 
         for module_id in disconnected:
-            self.get_logger().warn(f"Rover {module_id} heartbeat timeout")
+            self.get_logger().warning(f"Rover {module_id} heartbeat timeout")
             with self.rovers_lock:
                 if module_id in self.rovers:
                     self.rovers[module_id].state = RoverState.DISCONNECTED
@@ -488,6 +488,11 @@ class RoverBridge(Node):
 
     def _try_dispatch_missions(self):
         """Timer callback to try dispatching missions from queue."""
+        # Check for timed-out missions first
+        timed_out = self.auctioneer.check_timeouts()
+        for mission_id in timed_out:
+            self.get_logger().warning(f"Mission {mission_id} timed out — rover freed")
+
         if not self.auctioneer.mission_queue:
             return
 

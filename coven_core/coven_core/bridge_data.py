@@ -152,8 +152,9 @@ class DataBatchProcessor:
         wheel_circumference = 2.0 * math.pi * wheel_radius
         meters_per_tick = wheel_circumference / ticks_per_rev
 
-        # Process samples — convert raw ticks to odometry
+        # Process samples — convert raw ticks to odometry (computed once, reused for disk save)
         x, y, theta = 0.0, 0.0, 0.0
+        computed_poses = []
 
         for sample in samples:
             left_ticks = sample.get("left_ticks", 0)
@@ -173,6 +174,8 @@ class DataBatchProcessor:
                 theta -= 2.0 * math.pi
             while theta < -math.pi:
                 theta += 2.0 * math.pi
+
+            computed_poses.append((x, y, theta))
 
             # Create and publish Odometry message
             odom = Odometry()
@@ -222,8 +225,7 @@ class DataBatchProcessor:
 
         for attempt in range(1, MAX_SAVE_RETRIES + 1):
             saved_filename = self._save_batch_to_disk(
-                rover, mission_id, batch, samples,
-                wheel_radius, wheel_base, ticks_per_rev, meters_per_tick,
+                rover, mission_id, batch, samples, computed_poses,
                 lidar_angle_min, lidar_angle_max, lidar_angle_increment,
                 sensor_type, sensor_config,
             )
@@ -265,8 +267,7 @@ class DataBatchProcessor:
 
     def _save_batch_to_disk(
         self, rover: 'ConnectedRover', mission_id: str, batch: dict,
-        samples: list, wheel_radius: float, wheel_base: float,
-        ticks_per_rev: int, meters_per_tick: float,
+        samples: list, computed_poses: list,
         lidar_angle_min: float, lidar_angle_max: float, lidar_angle_increment: float,
         sensor_type: Optional[int] = None, sensor_config: Optional[bytes] = None,
     ) -> Optional[str]:
@@ -296,29 +297,10 @@ class DataBatchProcessor:
         if is_lidar and sensor_config and len(sensor_config) >= 18:
             lidar_num_rays = struct.unpack_from('<H', sensor_config, 16)[0]
 
-        # Convert samples to frames format expected by offline_slam_processor
+        # Convert samples to frames using pre-computed poses (no recomputation)
         frames = []
-        x, y, theta = 0.0, 0.0, 0.0
 
-        for sample in samples:
-            left_ticks = sample.get("left_ticks", 0)
-            right_ticks = sample.get("right_ticks", 0)
-
-            dist_left = left_ticks * meters_per_tick
-            dist_right = right_ticks * meters_per_tick
-            dist_center = (dist_left + dist_right) / 2.0
-            delta_theta = (dist_right - dist_left) / wheel_base
-
-            theta_mid = theta + delta_theta / 2.0
-            x += dist_center * math.cos(theta_mid)
-            y += dist_center * math.sin(theta_mid)
-            theta += delta_theta
-
-            while theta > math.pi:
-                theta -= 2.0 * math.pi
-            while theta < -math.pi:
-                theta += 2.0 * math.pi
-
+        for sample, (x, y, theta) in zip(samples, computed_poses):
             frame = {
                 "timestamp": sample.get("timestamp", 0.0),
                 "odom_x": x,
@@ -363,9 +345,9 @@ class DataBatchProcessor:
             "initial_theta": 0.0,
             "frames": frames,
             "metadata": {
-                "wheel_radius_m": wheel_radius,
-                "wheel_base_m": wheel_base,
-                "ticks_per_rev": ticks_per_rev,
+                "wheel_radius_m": batch.get("wheel_radius_mm", 80) / 1000.0,
+                "wheel_base_m": batch.get("wheel_base_mm", 298) / 1000.0,
+                "ticks_per_rev": batch.get("ticks_per_rev", 1440),
                 "dock_id": self._bridge.dock_id,
                 "coven_name": self._bridge.coven_name,
                 "sensor_type": sensor_type,

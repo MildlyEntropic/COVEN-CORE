@@ -119,12 +119,12 @@ impl EncoderReader {
         let wheel_base = motor_config.wheel_base;
 
         // Calculate meters per tick
-        // Circumference / pulses_per_rev / 4 (quadrature = 4x resolution)
+        // Circumference / pulses_per_rev / 2 (X2 quadrature: both edges on channel A only)
         let wheel_circumference = 2.0 * std::f64::consts::PI * wheel_radius;
-        let meters_per_tick = wheel_circumference / (encoder_config.pulses_per_rev as f64 * 4.0);
+        let meters_per_tick = wheel_circumference / (encoder_config.pulses_per_rev as f64 * 2.0);
 
         info!(
-            "Encoder resolution: {} pulses/rev -> {:.4} mm/tick (with 4x quadrature)",
+            "Encoder resolution: {} pulses/rev -> {:.4} mm/tick (X2 quadrature)",
             encoder_config.pulses_per_rev,
             meters_per_tick * 1000.0
         );
@@ -398,10 +398,10 @@ impl EncoderReader {
         let (left, right) = self.get_ticks();
 
         // Check for unreasonably high tick rates (noise)
-        // JGA25-371: 408 PPR * 4x quadrature = 1632 ticks/rev
-        // At 100 RPM = 100/60 * 1632 = ~2720 ticks/sec per wheel
-        // Allow 2x margin = ~5500 ticks/sec
-        let max_reasonable_ticks_per_sec = 5500.0;
+        // JGA25-371: 408 PPR * X2 quadrature = 816 ticks/rev
+        // At 100 RPM = 100/60 * 816 = ~1360 ticks/sec per wheel
+        // Allow 2x margin = ~2750 ticks/sec
+        let max_reasonable_ticks_per_sec = 2750.0;
         let max_delta = (max_reasonable_ticks_per_sec * dt_secs) as i64;
 
         let delta_left = (left - self.last_left_ticks).abs();
