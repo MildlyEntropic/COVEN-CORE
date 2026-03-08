@@ -144,7 +144,7 @@ impl RoverStateMachine {
             .unwrap_or(100.0);
 
         // Create navigator with config params
-        let navigator = WaypointFollower::with_config(&config.navigation);
+        let navigator = WaypointFollower::with_config(&config.navigation, config.timing.control_rate);
 
         // Create subsumption arbiter with nav params
         let arbiter = SubsumptionArbiter::new(NavParams::from(&config.navigation));
@@ -847,12 +847,16 @@ impl RoverStateMachine {
             // Upload raw sensor batch to dock
             // This is the key part - rover is dumb, just uploads raw data
             // Dock will run SLAM on it
+            // Note: UART may be disconnected if rover hasn't re-docked yet.
+            // Gracefully handle send failures — don't crash the daemon.
             let batch_msg = RoverMessage::DataBatch {
                 module_id: self.module_id().to_string(),
                 mission_id: mission.task_id.clone(),
                 batch: mission.batch,
             };
-            self.dock.send(batch_msg).await?;
+            if let Err(e) = self.dock.send(batch_msg).await {
+                warn!(error = %e, "Failed to upload sensor batch — UART may be disconnected");
+            }
 
             // Send completion message
             let complete = RoverMessage::TaskComplete {
@@ -863,7 +867,9 @@ impl RoverStateMachine {
                 coverage: 0.0,            // Dock calculates this from SLAM
                 duration,
             };
-            self.dock.send(complete).await?;
+            if let Err(e) = self.dock.send(complete).await {
+                warn!(error = %e, "Failed to send TaskComplete — UART may be disconnected");
+            }
         }
 
         self.transition_to(RoverState::Normal);

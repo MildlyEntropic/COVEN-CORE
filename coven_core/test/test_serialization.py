@@ -37,7 +37,7 @@ from coven_core.common import (
     # Dock-centric messages
     RoverRegistration, RoverRegistrationAck,
     SensorData, VelocityCommand,
-    RoverStatus, DockCommand,
+    RoverStatusMsgMsg, DockCommand,
 )
 
 
@@ -811,8 +811,8 @@ class TestDockCentricMessages(unittest.TestCase):
         self.assertAlmostEqual(decoded.timeout, 0.5)
 
     def test_rover_status_roundtrip(self):
-        """RoverStatus: encode → decode produces identical object."""
-        original = RoverStatus(
+        """RoverStatusMsg: encode → decode produces identical object."""
+        original = RoverStatusMsg(
             module_id="Lorelei",
             state="ACTIVE",
             battery_level=0.65,
@@ -821,7 +821,7 @@ class TestDockCentricMessages(unittest.TestCase):
             error_msg=""
         )
         encoded = encode(original)
-        decoded = decode(encoded, RoverStatus)
+        decoded = decode(encoded, RoverStatusMsg)
 
         self.assertIsNotNone(decoded)
         self.assertEqual(decoded.module_id, "Lorelei")
@@ -832,8 +832,8 @@ class TestDockCentricMessages(unittest.TestCase):
         self.assertEqual(decoded.error_msg, "")
 
     def test_rover_status_error_state(self):
-        """RoverStatus: error state with message should survive round-trip."""
-        original = RoverStatus(
+        """RoverStatusMsg: error state with message should survive round-trip."""
+        original = RoverStatusMsg(
             module_id="BrokenBot",
             state="ERROR",
             battery_level=0.10,
@@ -842,15 +842,15 @@ class TestDockCentricMessages(unittest.TestCase):
             error_msg="Motor driver fault detected"
         )
         encoded = encode(original)
-        decoded = decode(encoded, RoverStatus)
+        decoded = decode(encoded, RoverStatusMsg)
 
         self.assertEqual(decoded.state, "ERROR")
         self.assertFalse(decoded.is_moving)
         self.assertEqual(decoded.error_msg, "Motor driver fault detected")
 
     def test_rover_status_defaults(self):
-        """RoverStatus: missing fields should use sensible defaults."""
-        decoded = decode('{"module_id": "Rover1"}', RoverStatus)
+        """RoverStatusMsg: missing fields should use sensible defaults."""
+        decoded = decode('{"module_id": "Rover1"}', RoverStatusMsg)
 
         self.assertIsNotNone(decoded)
         self.assertEqual(decoded.state, "READY")

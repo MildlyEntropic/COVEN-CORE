@@ -588,7 +588,7 @@ async fn run_mock_mode(config: RoverConfig, mut dock: DockUart) -> Result<()> {
     use tokio::signal;
 
     let mut hardware = MockHardware::new();
-    let mut navigator = WaypointFollower::new();
+    let mut navigator = WaypointFollower::with_config(&config.navigation, config.timing.control_rate);
     let mut arbiter = SubsumptionArbiter::new(NavParams::from(&config.navigation));
     info!("Mock hardware initialized");
     info!("Press Ctrl+C to shutdown gracefully");
@@ -892,7 +892,9 @@ async fn run_mock_mode(config: RoverConfig, mut dock: DockUart) -> Result<()> {
                                 mission_id: task_id.clone(),
                                 batch,
                             };
-                            dock.send(batch_msg).await?;
+                            if let Err(e) = dock.send(batch_msg).await {
+                                warn!("Failed to upload sensor batch: {}", e);
+                            }
 
                             let complete = RoverMessage::TaskComplete {
                                 module_id: my_id,
@@ -902,7 +904,9 @@ async fn run_mock_mode(config: RoverConfig, mut dock: DockUart) -> Result<()> {
                                 coverage: 0.0,
                                 duration,
                             };
-                            dock.send(complete).await?;
+                            if let Err(e) = dock.send(complete).await {
+                                warn!("Failed to send TaskComplete: {}", e);
+                            }
                         }
                         navigator.clear();
                         hardware.stop();
@@ -923,7 +927,9 @@ async fn run_mock_mode(config: RoverConfig, mut dock: DockUart) -> Result<()> {
                                 mission_id: task_id.clone(),
                                 batch,
                             };
-                            dock.send(batch_msg).await?;
+                            if let Err(e) = dock.send(batch_msg).await {
+                                warn!("Failed to upload sensor batch: {}", e);
+                            }
 
                             let complete = RoverMessage::TaskComplete {
                                 module_id: my_id,
@@ -933,7 +939,9 @@ async fn run_mock_mode(config: RoverConfig, mut dock: DockUart) -> Result<()> {
                                 coverage: 0.0,
                                 duration,
                             };
-                            dock.send(complete).await?;
+                            if let Err(e) = dock.send(complete).await {
+                                warn!("Failed to send TaskComplete: {}", e);
+                            }
                         }
                         navigator.clear();
                         hardware.stop();
@@ -993,19 +1001,21 @@ async fn run_mock_mode(config: RoverConfig, mut dock: DockUart) -> Result<()> {
         }
 
         // Stream real-time sensor data (mock mode visualization)
-        if state == RoverState::FieldOps || state == RoverState::Normal {
+        // Only send when a new scan is available (~6Hz) to avoid exceeding
+        // 115200 baud UART bandwidth with 20Hz OdomData+ScanData.
+        if (state == RoverState::FieldOps || state == RoverState::Normal) && scan.is_some() {
             let odom_msg = RoverMessage::OdomData {
                 module_id: module_id(&assigned_name),
                 odom: OdomDataCompact::from_odom(&odom),
             };
-            dock.send(odom_msg).await?;
+            let _ = dock.send(odom_msg).await;
 
             if let Some(ref s) = scan {
                 let scan_msg = RoverMessage::ScanData {
                     module_id: module_id(&assigned_name),
                     scan: ScanDataCompact::from_scan(s),
                 };
-                dock.send(scan_msg).await?;
+                let _ = dock.send(scan_msg).await;
             }
         }
 

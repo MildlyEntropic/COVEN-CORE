@@ -460,6 +460,7 @@ def decode_identify_reply(payload: bytes) -> Optional[dict]:
         status_len = payload[pos]
         pos += 1
         status = payload[pos:pos + status_len].decode('utf-8', errors='replace')
+        pos += status_len
     else:
         status = "OK"
 
@@ -795,7 +796,7 @@ class BatchChunkAssembler:
 
         pos = 0
         batch_id = struct.unpack_from('<I', data, pos)[0]; pos += 4
-        total_samples = struct.unpack_from('<H', data, pos)[0]; pos += 2
+        total_samples = struct.unpack_from('<I', data, pos)[0]; pos += 4
         total_chunks = struct.unpack_from('<H', data, pos)[0]; pos += 2
 
         # Module ID (length-prefixed)

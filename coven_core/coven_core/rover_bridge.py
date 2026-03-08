@@ -370,20 +370,22 @@ class RoverBridge(Node):
         })
 
     def _check_heartbeats(self):
-        """Check for timed-out rovers."""
+        """Check for timed-out rovers and clean up disconnected ones."""
         now = time.time()
-        disconnected = []
+        timed_out = []
 
         with self.rovers_lock:
             for module_id, rover in self.rovers.items():
-                if now - rover.last_heartbeat > HEARTBEAT_TIMEOUT:
-                    disconnected.append(module_id)
+                if rover.state != RoverState.DISCONNECTED and \
+                   now - rover.last_heartbeat > HEARTBEAT_TIMEOUT:
+                    timed_out.append(module_id)
 
-        for module_id in disconnected:
+        for module_id in timed_out:
             self.get_logger().warning(f"Rover {module_id} heartbeat timeout")
             with self.rovers_lock:
-                if module_id in self.rovers:
-                    self.rovers[module_id].state = RoverState.DISCONNECTED
+                rover = self.rovers.get(module_id)
+            if rover:
+                self._disconnect_rover(rover)
 
     def get_connected_rovers(self) -> List[str]:
         """Get list of connected rover IDs."""

@@ -107,32 +107,14 @@ def analyze_frontiers(
     return frontiers
 
 
-def _bfs_expand(cells, seed, used, threshold_sq):
-    """Expand a cluster from seed via BFS, marking visited cells."""
-    cluster = [cells[seed]]
-    used[seed] = True
-    queue = [seed]
-
-    while queue:
-        cx, cy = cells[queue.pop(0)]
-        for j in range(len(cells)):
-            if used[j]:
-                continue
-            dx = cx - cells[j][0]
-            dy = cy - cells[j][1]
-            if dx * dx + dy * dy < threshold_sq:
-                cluster.append(cells[j])
-                used[j] = True
-                queue.append(j)
-
-    return cluster
-
-
 def cluster_frontiers(
     cells: List[Tuple[float, float]],
     threshold: float = 0.5,
 ) -> List[List[Tuple[float, float]]]:
-    """Cluster frontier cells by proximity using BFS flood-fill.
+    """Cluster frontier cells by proximity using BFS with spatial hashing.
+
+    Uses a grid-based spatial index to avoid O(n^2) pairwise distance checks.
+    Only cells in the same or adjacent grid buckets are compared.
 
     Transitive: if A is near B and B is near C, all three are in the same
     cluster even if A is not near C.
@@ -140,13 +122,50 @@ def cluster_frontiers(
     if not cells:
         return []
 
-    clusters: List[List[Tuple[float, float]]] = []
-    used = [False] * len(cells)
+    from collections import deque
+
+    inv_threshold = 1.0 / threshold
     threshold_sq = threshold * threshold
 
+    # Build spatial hash: bucket cells into grid cells of size `threshold`
+    buckets: dict = {}
+    for i, (x, y) in enumerate(cells):
+        gx = int(x * inv_threshold)
+        gy = int(y * inv_threshold)
+        buckets.setdefault((gx, gy), []).append(i)
+
+    clusters: List[List[Tuple[float, float]]] = []
+    used = [False] * len(cells)
+
     for i in range(len(cells)):
-        if not used[i]:
-            clusters.append(_bfs_expand(cells, i, used, threshold_sq))
+        if used[i]:
+            continue
+
+        # BFS from cell i, checking only nearby buckets
+        cluster = [cells[i]]
+        used[i] = True
+        queue = deque([i])
+
+        while queue:
+            idx = queue.popleft()
+            cx, cy = cells[idx]
+            gx = int(cx * inv_threshold)
+            gy = int(cy * inv_threshold)
+
+            # Check 3x3 neighborhood of grid buckets
+            for dx in range(-1, 2):
+                for dy in range(-1, 2):
+                    for j in buckets.get((gx + dx, gy + dy), []):
+                        if used[j]:
+                            continue
+                        ddx = cx - cells[j][0]
+                        ddy = cy - cells[j][1]
+                        if ddx * ddx + ddy * ddy < threshold_sq:
+                            cluster.append(cells[j])
+                            used[j] = True
+                            queue.append(j)
+
+        clusters.append(cluster)
 
     return clusters
 

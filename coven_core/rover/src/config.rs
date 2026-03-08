@@ -53,6 +53,7 @@ use serde::{Deserialize, Serialize};
 /// Communication with the dock occurs ONLY via UART when physically docked.
 /// See `dock_uart` field for UART configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct RoverConfig {
     /// Unique rover identifier (e.g., "Morgan_Le_Fay")
     pub rover_id: String,
@@ -90,6 +91,7 @@ pub struct HardwareConfig {
 
 /// TB6612FNG motor driver pin configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct MotorConfig {
     /// Left motor PWM pin (BCM numbering).
     pub left_pwm: u8,
@@ -117,6 +119,7 @@ pub struct MotorConfig {
 
 /// Quadrature encoder configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct EncoderConfig {
     /// Left encoder channel A pin.
     pub left_a: u8,
@@ -132,6 +135,7 @@ pub struct EncoderConfig {
 
 /// YDLiDAR configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct LidarConfig {
     /// Serial port device path.
     pub port: String,
@@ -147,6 +151,7 @@ pub struct LidarConfig {
 
 /// Battery monitoring configuration via I2C ADC.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct BatteryConfig {
     /// I2C address of ADC (ADS1015/ADS1115).
     pub adc_address: u8,
@@ -189,6 +194,7 @@ pub struct DockUartConfig {
 
 /// Control loop timing configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct TimingConfig {
     /// Main control loop rate in Hz.
     pub control_rate: f64,
@@ -207,6 +213,7 @@ pub struct TimingConfig {
 
 /// Navigation parameters for Lyapunov potential field control.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct NavigationConfig {
     /// Attractive gain - how strongly to pull toward goal.
     pub k_att: f64,

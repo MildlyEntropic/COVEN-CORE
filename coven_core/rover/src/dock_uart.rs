@@ -43,7 +43,7 @@
 use std::time::{Duration, Instant};
 
 // --- Third-party ---
-use anyhow::{Context, Result};
+use anyhow::Result;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 use tokio_serial::{SerialPortBuilderExt, SerialStream};
@@ -123,7 +123,7 @@ fn cobs_encode(data: &[u8]) -> Vec<u8> {
     let mut output = Vec::with_capacity(data.len() + data.len() / 254 + 1);
     let mut idx = 0;
 
-    while idx <= data.len() {
+    while idx < data.len() {
         // Find next zero byte (or end of data)
         let next_zero = data[idx..].iter().position(|&b| b == 0)
             .map(|p| idx + p)
@@ -312,12 +312,23 @@ impl DockUart {
     }
 
     /// Send a message to the dock.
+    ///
+    /// Uses try_send (non-blocking) to prevent the control loop from stalling
+    /// when the channel is full — e.g. during FieldOps when the rover is
+    /// physically disconnected and the UART loop cannot drain the channel.
     pub async fn send(&self, message: RoverMessage) -> Result<()> {
         if let Some(tx) = &self.outgoing_tx {
-            tx.send(message)
-                .await
-                .context("Failed to queue message for sending")?;
-            Ok(())
+            match tx.try_send(message) {
+                Ok(()) => Ok(()),
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    // Channel full — drop message to prevent blocking control loop.
+                    // Normal during FieldOps when rover is disconnected from dock.
+                    Ok(())
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => {
+                    anyhow::bail!("UART channel closed")
+                }
+            }
         } else {
             anyhow::bail!("Not connected to dock UART")
         }
@@ -781,7 +792,7 @@ fn build_batch_header_payload(
     p.push(SUBTYPE_SENSOR_BATCH_CHUNK);
     p.push(CHUNK_TYPE_HEADER);
     p.extend_from_slice(&batch_id.to_le_bytes());
-    p.extend_from_slice(&(total_samples as u16).to_le_bytes());
+    p.extend_from_slice(&(total_samples as u32).to_le_bytes());
     p.extend_from_slice(&(total_chunks as u16).to_le_bytes());
 
     // Module ID (length-prefixed)

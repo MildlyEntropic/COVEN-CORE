@@ -12,12 +12,12 @@ Date: January 2025
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import math
 import os
 import struct
+import time
 from datetime import datetime
 from typing import Optional, TYPE_CHECKING
 
@@ -65,17 +65,14 @@ class DataBatchProcessor:
         self, rover: 'ConnectedRover', mission_id: str, batch: dict,
         sensor_type: Optional[int] = None, sensor_config: Optional[bytes] = None,
     ):
-        """Synchronous wrapper for handle_data_batch (called from serial thread)."""
-        import asyncio
-        loop = asyncio.new_event_loop()
-        try:
-            loop.run_until_complete(
-                self.handle_data_batch(rover, mission_id, batch, sensor_type, sensor_config)
-            )
-        finally:
-            loop.close()
+        """Process a data batch synchronously (called from serial thread).
 
-    async def handle_data_batch(
+        This replaces the previous async wrapper that created a new event loop,
+        which blocked all serial reads for the entire batch processing duration.
+        """
+        self._process_data_batch(rover, mission_id, batch, sensor_type, sensor_config)
+
+    def _process_data_batch(
         self, rover: 'ConnectedRover', mission_id: str, batch: dict,
         sensor_type: Optional[int] = None, sensor_config: Optional[bytes] = None,
     ):
@@ -209,7 +206,7 @@ class DataBatchProcessor:
                     scan.range_max = 10.0
 
                     scan.ranges = [
-                        float(r) / 1000.0 if r > 0 else 0.0
+                        float(r) / 1000.0 if r > 0 else float('inf')
                         for r in lidar_ranges_mm
                     ]
 
@@ -235,7 +232,7 @@ class DataBatchProcessor:
                 f"Save attempt {attempt}/{MAX_SAVE_RETRIES} failed for batch from {rover.module_id}"
             )
             if attempt < MAX_SAVE_RETRIES:
-                await asyncio.sleep(0.5)
+                time.sleep(0.5)
 
         # Notify offline SLAM processor if saved successfully
         if saved_filename:
@@ -314,7 +311,7 @@ class DataBatchProcessor:
             if is_lidar:
                 lidar_ranges_mm = _decode_lidar_sample(sample, lidar_num_rays)
                 scan_ranges = [
-                    float(r) / 1000.0 if r > 0 else 0.0
+                    float(r) / 1000.0 if r > 0 else float('inf')
                     for r in lidar_ranges_mm
                 ]
                 frame["scan_angle_min"] = lidar_angle_min

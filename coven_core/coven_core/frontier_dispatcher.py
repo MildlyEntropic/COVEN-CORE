@@ -229,7 +229,7 @@ class FrontierDispatcher(Node):
 
         grid = np.array(self.current_map.data)
         total = len(grid)
-        known = np.sum((grid == 0) | (grid == 100))  # Free or occupied
+        known = np.sum(grid >= 0)  # Any non-unknown cell (free=0, occupied=1-100)
         self.current_coverage = known / total if total > 0 else 0
 
     def _refresh_frontiers(self):
@@ -450,8 +450,9 @@ class FrontierDispatcher(Node):
         msg.data = json.dumps(mission_request)
         self.mission_pub.publish(msg)
 
-        # Track dispatch time for race condition detection
+        # Mark rover as DEPLOYED to prevent double-dispatch
         if module_id in self.rovers:
+            self.rovers[module_id].status = DispatchStatus.DEPLOYED
             self.rovers[module_id].current_mission = mission_id
             self.rovers[module_id].dispatch_time = self.get_clock().now().nanoseconds / 1e9
 

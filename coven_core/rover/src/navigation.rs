@@ -494,18 +494,18 @@ impl WaypointFollower {
             waypoints: Vec::new(),
             current_idx: 0,
             state: NavState::Idle,
-            stuck_detector: StuckDetector::new(),
+            stuck_detector: StuckDetector::new(20.0),
         }
     }
 
     /// Create a new waypoint follower with custom navigation parameters.
-    pub fn with_config(config: &NavigationConfig) -> Self {
+    pub fn with_config(config: &NavigationConfig, control_rate_hz: f64) -> Self {
         Self {
             navigator: LyapunovNavigator::with_params(NavParams::from(config)),
             waypoints: Vec::new(),
             current_idx: 0,
             state: NavState::Idle,
-            stuck_detector: StuckDetector::new(),
+            stuck_detector: StuckDetector::new(control_rate_hz),
         }
     }
 
@@ -621,16 +621,19 @@ struct StuckDetector {
     stuck_count: u32,
     /// Total update calls.
     update_count: u32,
+    /// How many update calls equal ~1 second (matches control loop rate).
+    samples_per_check: u32,
 }
 
 impl StuckDetector {
-    /// Create a new stuck detector.
-    fn new() -> Self {
+    /// Create a new stuck detector for the given control loop rate.
+    fn new(control_rate_hz: f64) -> Self {
         Self {
             last_x: None,
             last_y: None,
             stuck_count: 0,
             update_count: 0,
+            samples_per_check: (control_rate_hz.round() as u32).max(1),
         }
     }
 
@@ -653,8 +656,8 @@ impl StuckDetector {
     fn update(&mut self, x: f64, y: f64) -> bool {
         self.update_count += 1;
 
-        // Check every ~1 second (at 20Hz control rate)
-        if self.update_count % 20 != 0 {
+        // Check every ~1 second (based on configured control rate)
+        if self.update_count % self.samples_per_check != 0 {
             return false;
         }
 

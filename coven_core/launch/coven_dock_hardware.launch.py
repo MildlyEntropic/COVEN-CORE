@@ -81,9 +81,9 @@ def generate_launch_description():
         parameters=[{
             'use_sim_time': False,
             'coven_name': coven_name,
-            'dock_position_x': dock_x,
-            'dock_position_y': dock_y,
-            'data_dir': data_dir,
+            'dock_x': dock_x,
+            'dock_y': dock_y,
+            'data_base_dir': data_dir,
         }],
     )
 
