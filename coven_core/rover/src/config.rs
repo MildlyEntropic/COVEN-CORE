@@ -133,7 +133,7 @@ pub struct EncoderConfig {
     pub pulses_per_rev: u32,
 }
 
-/// YDLiDAR configuration.
+/// RPLIDAR C1 configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LidarConfig {
@@ -280,9 +280,9 @@ impl Default for MotorConfig {
             standby: 17,
 
             pwm_frequency: 1000.0,
-            wheel_base: 0.298,  // CubeRover 2U wheel separation
-            wheel_radius: 0.1,  // 200mm diameter wheels
-            max_rpm: 100.0,    // JGA25-371 ~100 RPM no-load
+            wheel_base: 0.298,   // CubeRover 2U wheel separation
+            wheel_radius: 0.0325, // 65mm diameter wheels
+            max_rpm: 130.0,      // JGA25-371 ~130 RPM no-load
         }
     }
 }
@@ -294,7 +294,7 @@ impl Default for EncoderConfig {
             left_b: 24,
             right_a: 27,
             right_b: 22,
-            pulses_per_rev: 408, // JGA25-371, 34:1 gearbox, 12 PPR
+            pulses_per_rev: 312, // JGA25-371, 26:1 gearbox, 12 PPR
         }
     }
 }
@@ -302,11 +302,11 @@ impl Default for EncoderConfig {
 impl Default for LidarConfig {
     fn default() -> Self {
         Self {
-            port: "/dev/ydlidar".to_string(),
-            baud_rate: 128000,
-            scan_rate: 6.0,
-            range_min: 0.12,
-            range_max: 10.0,
+            port: "/dev/rplidar".to_string(),
+            baud_rate: 460800,
+            scan_rate: 5.5,
+            range_min: 0.15,
+            range_max: 12.0,
         }
     }
 }

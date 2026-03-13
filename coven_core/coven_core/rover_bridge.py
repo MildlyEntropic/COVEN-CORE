@@ -62,7 +62,7 @@ from coven_core.frame_codec import (
 # Configuration
 DEFAULT_SERIAL_PORT = 'auto'  # Auto-detect: scans /dev/ttyACM* and /dev/ttyUSB*
 DEFAULT_BAUD_RATE = 115200
-HEARTBEAT_TIMEOUT = 5.0
+HEARTBEAT_TIMEOUT = 30.0
 CMD_VEL_TIMEOUT = 0.5
 MISSION_TIMEOUT_FACTOR = 5.0
 DEFAULT_NAMESPACE_HOLD_TIME = 300.0
@@ -130,7 +130,9 @@ class RoverBridge(Node):
         self.coven_name = self.get_parameter('coven_name').value or get_coven_name()
         self.dock_x = self.get_parameter('dock_x').value
         self.dock_y = self.get_parameter('dock_y').value
-        self.data_base_dir = self.get_parameter('data_base_dir').value
+        self.data_base_dir = os.path.expanduser(
+            self.get_parameter('data_base_dir').value
+        )
 
         # Session timestamp for data directory
         self.session_start = datetime.now()

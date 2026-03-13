@@ -517,6 +517,12 @@ impl SubsumptionArbiter {
     /// 2. Behavioral layer arbitration (L4→L3→L2→L1, first active wins)
     /// 3. Combine: behavioral + repulsive, clamped
     pub fn evaluate(&mut self, ctx: &LayerContext) -> VelocityCmd {
+        // Safety: no LiDAR data means no obstacle avoidance — stop immediately.
+        // This prevents blind driving if the LiDAR task crashes.
+        if ctx.lidar_ranges.is_empty() {
+            return VelocityCmd::stop();
+        }
+
         // Phase 1: L0 — always compute repulsive constraint
         let l0_output = self.obstacle_avoidance.evaluate(ctx);
 

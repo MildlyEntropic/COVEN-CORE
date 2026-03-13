@@ -92,6 +92,12 @@ pub struct RoverStateMachine {
     hardware: Hardware,
     /// LiDAR driver for obstacle detection.
     lidar: LidarDriver,
+    /// Cached last valid LiDAR scan (LiDAR runs at ~6Hz, control at 20Hz).
+    last_scan: Option<crate::lidar::LaserScan>,
+    /// When the last valid LiDAR scan was received.
+    last_scan_time: Instant,
+    /// Whether a batch-full warning has been logged this mission.
+    batch_full_warned: bool,
     /// UART connection to dock (via 9-pin connector, NOT wireless).
     dock: DockUart,
     /// Optional battery reader (may not be present).
@@ -114,8 +120,6 @@ pub struct RoverStateMachine {
 
     /// Last heartbeat send time.
     last_heartbeat: Instant,
-    /// Last velocity command time.
-    last_cmd_vel: Instant,
     /// Last sensor sample time.
     last_sample: Instant,
     /// Last battery read time.
@@ -159,6 +163,9 @@ impl RoverStateMachine {
             config,
             hardware,
             lidar,
+            last_scan: None,
+            last_scan_time: Instant::now(),
+            batch_full_warned: false,
             dock,
             battery,
             state: RoverState::Boot,
@@ -168,7 +175,6 @@ impl RoverStateMachine {
             navigator,
             arbiter,
             last_heartbeat: Instant::now(),
-            last_cmd_vel: Instant::now(),
             last_sample: Instant::now(),
             last_battery_read: Instant::now(),
             current_mission: None,
@@ -229,16 +235,28 @@ impl RoverStateMachine {
         // Control loop timing
         let loop_period = Duration::from_secs_f64(1.0 / self.config.timing.control_rate);
         let heartbeat_period = Duration::from_secs_f64(1.0 / self.config.timing.heartbeat_rate);
-        let cmd_timeout = Duration::from_secs_f64(self.config.timing.cmd_timeout);
-
         loop {
             let loop_start = Instant::now();
 
             // Update odometry
             let odom = self.hardware.encoders.update();
 
-            // Get latest LiDAR scan (non-blocking)
-            let scan = self.lidar.get_scan().await;
+            // Get latest LiDAR scan (non-blocking), cache for arbiter
+            let has_fresh_scan = if let Some(new_scan) = self.lidar.get_scan().await {
+                self.last_scan = Some(new_scan);
+                self.last_scan_time = Instant::now();
+                true
+            } else {
+                false
+            };
+
+            // If no scan for >2s, LiDAR may have crashed — clear cache
+            if self.last_scan_time.elapsed() > Duration::from_secs(2) {
+                if self.last_scan.is_some() {
+                    warn!("LiDAR data stale >2s — possible sensor failure, stopping navigation");
+                    self.last_scan = None;
+                }
+            }
 
             // Update battery reading periodically
             // Use configurable interval (more frequent during missions)
@@ -264,6 +282,9 @@ impl RoverStateMachine {
             while let Some(msg) = self.dock.try_recv() {
                 self.handle_dock_message(msg).await?;
             }
+
+            // Reference cached scan after message handling (borrow checker)
+            let scan = &self.last_scan;
 
             // State-specific behavior
             match self.state {
@@ -365,6 +386,7 @@ impl RoverStateMachine {
                     // === SENSOR DATA COLLECTION ===
 
                     // Record raw sensor sample periodically (~10Hz)
+                    // Use fresh_scan (not cached) to avoid re-recording same scan
                     let sample_period = Duration::from_millis(100);
                     if self.last_sample.elapsed() >= sample_period {
                         if let Some(ref mut mission) = self.current_mission {
@@ -372,10 +394,14 @@ impl RoverStateMachine {
                             let (left_ticks, right_ticks) =
                                 self.hardware.encoders.get_delta_ticks();
 
-                            // Get sensor data as opaque bytes
-                            let sensor_data = scan.as_ref()
-                                .map(|s| encode_lidar_ranges(&s.to_ranges_mm()))
-                                .unwrap_or_default();
+                            // Get sensor data as opaque bytes (only from fresh scans)
+                            let sensor_data = if has_fresh_scan {
+                                self.last_scan.as_ref()
+                                    .map(|s| encode_lidar_ranges(&s.to_ranges_mm()))
+                                    .unwrap_or_default()
+                            } else {
+                                Vec::new()
+                            };
 
                             let sample = RawSensorSample {
                                 timestamp: odom.timestamp - mission.batch.mission_start,
@@ -383,7 +409,13 @@ impl RoverStateMachine {
                                 right_ticks,
                                 sensor_data,
                             };
-                            mission.batch.add_sample(sample);
+                            if !mission.batch.add_sample(sample) && !self.batch_full_warned {
+                                warn!(
+                                    "Sensor batch full ({} samples) — no more data will be recorded",
+                                    mission.batch.len()
+                                );
+                                self.batch_full_warned = true;
+                            }
                         }
                         self.last_sample = Instant::now();
                     }
@@ -432,7 +464,6 @@ impl RoverStateMachine {
                     // Arbiter decides final velocity (L0–L4 cascade)
                     let cmd = self.arbiter.evaluate(&ctx);
                     self.hardware.motors.set_velocity(cmd.linear, cmd.angular);
-                    self.last_cmd_vel = Instant::now();
 
                     // Check if navigation completed
                     match self.navigator.state() {
@@ -445,12 +476,6 @@ impl RoverStateMachine {
                             self.complete_mission(false).await?;
                         }
                         _ => {}
-                    }
-
-                    // Safety stop if no recent commands
-                    if self.last_cmd_vel.elapsed() > cmd_timeout {
-                        warn!("cmd_vel timeout - stopping motors");
-                        self.hardware.motors.stop();
                     }
                 }
 
@@ -480,9 +505,11 @@ impl RoverStateMachine {
                 }
             }
 
-            // Send heartbeat if needed
+            // Send heartbeat if needed (don't crash loop on send failure)
             if self.last_heartbeat.elapsed() >= heartbeat_period {
-                self.send_heartbeat(&odom).await?;
+                if let Err(e) = self.send_heartbeat(&odom).await {
+                    warn!("Failed to send heartbeat: {}", e);
+                }
                 self.last_heartbeat = Instant::now();
             }
 
@@ -726,6 +753,7 @@ impl RoverStateMachine {
                     start_time: Instant::now(),
                     timeout_secs,
                 });
+                self.batch_full_warned = false;
 
                 // Send task start
                 let start = RoverMessage::TaskStart {
@@ -775,7 +803,6 @@ impl RoverStateMachine {
             DockMessage::CmdVel { linear, angular } => {
                 debug!(linear = linear, angular = angular, "Received CMD_VEL");
                 self.hardware.motors.set_velocity(linear, angular);
-                self.last_cmd_vel = Instant::now();
             }
         }
 

@@ -301,6 +301,10 @@ pub struct RawSensorSample {
     pub sensor_data: Vec<u8>,
 }
 
+/// Maximum samples per batch (~60 min at 10Hz, ~27MB with LiDAR).
+/// Safety cap to prevent OOM on Pi Zero 2W (512MB RAM).
+pub const MAX_BATCH_SAMPLES: usize = 36_000;
+
 /// A batch of sensor samples from a mission.
 ///
 /// The batch carries a `sensor_type` tag and an opaque `sensor_config` blob
@@ -344,9 +348,13 @@ impl SensorBatch {
         }
     }
 
-    /// Add a sample to the batch.
-    pub fn add_sample(&mut self, sample: RawSensorSample) {
+    /// Add a sample to the batch. Returns false if batch is full.
+    pub fn add_sample(&mut self, sample: RawSensorSample) -> bool {
+        if self.samples.len() >= MAX_BATCH_SAMPLES {
+            return false;
+        }
         self.samples.push(sample);
+        true
     }
 
     /// Get the number of samples.

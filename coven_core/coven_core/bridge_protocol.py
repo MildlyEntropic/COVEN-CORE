@@ -177,6 +177,12 @@ class ProtocolHandler:
             encode_identify_ack(self._bridge.dock_id, rover.module_id)
         )
 
+        # Small delay so the rover processes IDENTIFY_ACK (→ WaitVerify)
+        # before VERIFY_OK arrives. Over UART this is sequential, but the
+        # rover's async reader + channel means both could land in the same
+        # try_recv() batch. 50ms is plenty for the state transition.
+        time.sleep(0.05)
+
         # Then send VERIFY_OK to proceed with verification
         self._bridge.send_frame(
             encode_verify_ok(self._bridge.dock_id, rover.module_id)

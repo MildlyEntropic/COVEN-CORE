@@ -600,7 +600,6 @@ async fn run_mock_mode(config: RoverConfig, mut dock: DockUart) -> Result<()> {
     let mut state = RoverState::Identify;
     let mut battery_pct = 100.0_f64;
     let mut last_heartbeat = Instant::now();
-    let mut last_cmd_vel = Instant::now();
     let mut last_sample = Instant::now();
 
     // Witch name assigned by dock (set during handshake)
@@ -621,7 +620,6 @@ async fn run_mock_mode(config: RoverConfig, mut dock: DockUart) -> Result<()> {
     // Timing
     let loop_period = Duration::from_secs_f64(1.0 / config.timing.control_rate);
     let heartbeat_period = Duration::from_secs_f64(1.0 / config.timing.heartbeat_rate);
-    let cmd_timeout = Duration::from_secs_f64(config.timing.cmd_timeout);
     let scan_period = Duration::from_millis(166); // ~6 Hz
     let sample_period = Duration::from_millis(100); // 10 Hz raw data collection
     let mut last_scan = Instant::now();
@@ -720,7 +718,6 @@ async fn run_mock_mode(config: RoverConfig, mut dock: DockUart) -> Result<()> {
                 DockMessage::CmdVel { linear, angular } => {
                     // Manual override - disable autonomous nav temporarily
                     hardware.set_velocity(linear, angular);
-                    last_cmd_vel = Instant::now();
                 }
 
                 DockMessage::TaskReq {
@@ -873,7 +870,6 @@ async fn run_mock_mode(config: RoverConfig, mut dock: DockUart) -> Result<()> {
                 // Arbiter decides final velocity (L0–L4 cascade)
                 let cmd = arbiter.evaluate(&ctx);
                 hardware.set_velocity(cmd.linear, cmd.angular);
-                last_cmd_vel = Instant::now();
 
                 // Check navigation state
                 match navigator.state() {
@@ -950,10 +946,6 @@ async fn run_mock_mode(config: RoverConfig, mut dock: DockUart) -> Result<()> {
                     _ => {}
                 }
 
-                // Safety stop if no recent activity
-                if last_cmd_vel.elapsed() > cmd_timeout {
-                    hardware.stop();
-                }
             }
 
             RoverState::Normal => {
@@ -993,10 +985,8 @@ async fn run_mock_mode(config: RoverConfig, mut dock: DockUart) -> Result<()> {
             }
 
             _ => {
-                // Not in FieldOps or Normal - safety stop
-                if last_cmd_vel.elapsed() > cmd_timeout {
-                    hardware.stop();
-                }
+                // Not in FieldOps or Normal - motors should already be stopped
+                hardware.stop();
             }
         }
 

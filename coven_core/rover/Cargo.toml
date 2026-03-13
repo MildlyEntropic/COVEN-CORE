@@ -17,7 +17,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-# Serial port (for YDLiDAR)
+# Serial port (for RPLIDAR C1)
 tokio-serial = "5.4"
 
 # Logging

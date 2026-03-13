@@ -399,8 +399,13 @@ def encode_task_request(task_data: dict) -> bytes:
 
     Matches parse_data_frame() subtype 0x10 in dock_uart.rs.
     Task data is JSON-encoded within the binary frame.
+
+    The rover deserializes with serde_json::from_slice::<DockMessage>(),
+    which expects Rust's default externally-tagged enum representation:
+      {"TaskReq": {<fields>}}
     """
-    json_bytes = json.dumps(task_data).encode('utf-8')
+    wrapped = {"TaskReq": task_data}
+    json_bytes = json.dumps(wrapped).encode('utf-8')
     payload = bytes([SUBTYPE_TASK_MESSAGE]) + json_bytes
     return build_frame(MSG_DATA_FRAME, payload)
 
@@ -791,7 +796,7 @@ class BatchChunkAssembler:
 
     def _decode_header(self, data: bytes) -> Optional[dict]:
         """Decode BATCH_HEADER fields from binary data."""
-        if len(data) < 8:
+        if len(data) < 10:
             return None
 
         pos = 0

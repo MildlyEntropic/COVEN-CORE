@@ -568,6 +568,9 @@ class TaskAuctioneer:
                         "status": r.status.value,
                         "payload": r.payload.value,
                         "battery_pct": r.battery_pct,
+                        "x": r.position[0],
+                        "y": r.position[1],
+                        "heading": r.heading,
                         "missions_completed": r.missions_completed,
                         "current_mission": r.current_mission,
                     }

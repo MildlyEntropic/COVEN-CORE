@@ -315,7 +315,7 @@ class FrontierDispatcher(Node):
             self.get_logger().info(f'[Dispatcher] No map yet, sending {len(idle_rovers)} rover(s) to explore')
             for i, rover in enumerate(idle_rovers):
                 direction = directions[i % len(directions)]
-                dir_name = ['N', 'S', 'E', 'W', 'NE', 'NW', 'SE', 'SW'][i % 8]
+                dir_name = ['E', 'W', 'N', 'S', 'NE', 'SE', 'NW', 'SW'][i % 8]
                 self.get_logger().info(f'[Dispatcher] Sending {rover.module_id} {dir_name} ({math.degrees(direction):.0f}°)')
                 self._dispatch_rover(rover.module_id, direction=direction)
             self.initial_dispatched = True

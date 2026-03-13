@@ -37,7 +37,7 @@ from coven_core.common import (
     # Dock-centric messages
     RoverRegistration, RoverRegistrationAck,
     SensorData, VelocityCommand,
-    RoverStatusMsgMsg, DockCommand,
+    RoverStatusMsg, DockCommand,
 )
 
 
