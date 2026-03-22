@@ -83,8 +83,8 @@ impl MockHardware {
             v_linear: 0.0,
             v_angular: 0.0,
             wheel_base: 0.298,
-            wheel_radius: 0.1,
-            ticks_per_rev: 816, // JGA25-371: 408 PPR * X2 quadrature
+            wheel_radius: 0.0325,
+            ticks_per_rev: 624, // JGA25-371: 312 PPR * X2 quadrature (26:1, 12 PPR)
             left_ticks_accum: 0.0,
             right_ticks_accum: 0.0,
             last_left_ticks: 0,
@@ -185,8 +185,8 @@ impl MockHardware {
         let angle_min = -PI;
         let angle_max = PI;
         let angle_increment = (angle_max - angle_min) / num_rays as f64;
-        let range_min = 0.12;
-        let range_max = 10.0;
+        let range_min = 0.15;
+        let range_max = 12.0;
 
         let mut ranges = Vec::with_capacity(num_rays);
 
@@ -205,7 +205,7 @@ impl MockHardware {
             angle_max,
             angle_increment,
             time_increment: 0.0,
-            scan_time: 1.0 / 6.0,
+            scan_time: 1.0 / 5.5,
             range_min,
             range_max,
             ranges,

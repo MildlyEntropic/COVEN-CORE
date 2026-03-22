@@ -224,7 +224,7 @@ coven_core/
 ### Rover
 - Rust toolchain (stable)
 - `rppal` (GPIO/I2C/SPI for Raspberry Pi)
-- `serialport` (LiDAR UART)
+- `tokio-serial` (LiDAR UART)
 
 ### Dock
 ```bash
@@ -273,7 +273,7 @@ University of Hawaiʻi at Mānoa
 Department of Astronomy
 
 Faculty Advisor: Dr. Miguel Nunes (HSFL)
-Thesis Advisor: Dr. Jiaoyang Zhu (Colorado School of Mines)
+Thesis Advisor: Dr. Frances 'Frankie' Zhu (Colorado School of Mines)
 
 ---
 

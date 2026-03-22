@@ -43,7 +43,7 @@ pub enum HardwareComponent {
     Motor,
     /// Quadrature encoder.
     Encoder,
-    /// YDLiDAR X4.
+    /// RPLIDAR C1.
     Lidar,
 }
 

@@ -49,11 +49,11 @@ See: `COVEN Interface Specification v0.3`
 ## Building
 
 ```bash
-# Cross-compile for Raspberry Pi Zero 2W (armv7)
-cargo build --release --target armv7-unknown-linux-gnueabihf
+# Cross-compile for Raspberry Pi Zero 2W (64-bit Pi OS, default)
+cargo build --release --target aarch64-unknown-linux-gnu
 
-# Or build natively on the Pi
-cargo build --release
+# Cross-compile for 32-bit Pi OS
+cargo build --release --target armv7-unknown-linux-gnueabihf
 ```
 
 ## Usage
@@ -105,22 +105,22 @@ right_in2 = 26
 standby = 17
 pwm_frequency = 1000.0
 wheel_base = 0.298
-wheel_radius = 0.1
-max_rpm = 100.0
+wheel_radius = 0.0325
+max_rpm = 130.0
 
 [hardware.encoders]
 left_a = 23
 left_b = 24
 right_a = 27
 right_b = 22
-pulses_per_rev = 408
+pulses_per_rev = 312
 
 [hardware.lidar]
-port = "/dev/ydlidar"
-baud_rate = 128000
-scan_rate = 6.0
-range_min = 0.12
-range_max = 10.0
+port = "/dev/rplidar"
+baud_rate = 460800
+scan_rate = 5.5
+range_min = 0.15
+range_max = 12.0
 
 [hardware.battery]
 adc_address = 0x48
@@ -152,8 +152,8 @@ mission_timeout_factor = 5.0
 
 - Raspberry Pi Zero 2W (or Pi 4)
 - TB6612FNG Motor Driver
-- N20 Motors with encoders
-- YDLiDAR X4
+- JGA25-371 motors with encoders
+- RPLIDAR C1
 - ADS1015/ADS1115 ADC for battery monitoring
 - COVEN Type-A 9-pin dock connector
 
@@ -165,7 +165,7 @@ mission_timeout_factor = 5.0
 - `state.rs` - Rover FSM (lifecycle management)
 - `protocol.rs` - COVEN protocol messages and framing
 - `navigation.rs` - Lyapunov potential field navigation
-- `lidar.rs` - YDLiDAR X4 driver
+- `lidar.rs` - RPLIDAR C1 driver
 - `hardware/` - Motor, encoder, battery drivers
 - `mock.rs` - Simulated hardware for testing
 
