@@ -90,23 +90,47 @@ pub struct HardwareConfig {
 }
 
 /// TB6612FNG motor driver pin configuration.
+///
+/// 4-wheel skid-steer layout with 2× TB6612FNG drivers:
+/// - Driver 1: front-left (channel A) + front-right (channel B)
+/// - Driver 2: rear-left (channel A) + rear-right (channel B)
+///
+/// For normal skid-steer driving, FL=RL and FR=RR (same command per side).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MotorConfig {
-    /// Left motor PWM pin (BCM numbering).
-    pub left_pwm: u8,
-    /// Left motor IN1 pin.
-    pub left_in1: u8,
-    /// Left motor IN2 pin.
-    pub left_in2: u8,
-    /// Right motor PWM pin.
-    pub right_pwm: u8,
-    /// Right motor IN1 pin.
-    pub right_in1: u8,
-    /// Right motor IN2 pin.
-    pub right_in2: u8,
-    /// Standby pin (shared between motors).
-    pub standby: u8,
+    // --- TB6612FNG #1: Front motors ---
+    /// Front-left motor PWM pin (BCM numbering).
+    pub front_left_pwm: u8,
+    /// Front-left motor IN1 pin.
+    pub front_left_in1: u8,
+    /// Front-left motor IN2 pin.
+    pub front_left_in2: u8,
+    /// Front-right motor PWM pin.
+    pub front_right_pwm: u8,
+    /// Front-right motor IN1 pin.
+    pub front_right_in1: u8,
+    /// Front-right motor IN2 pin.
+    pub front_right_in2: u8,
+    /// Standby pin for driver 1 (HIGH to enable).
+    pub standby_1: u8,
+
+    // --- TB6612FNG #2: Rear motors ---
+    /// Rear-left motor PWM pin.
+    pub rear_left_pwm: u8,
+    /// Rear-left motor IN1 pin.
+    pub rear_left_in1: u8,
+    /// Rear-left motor IN2 pin.
+    pub rear_left_in2: u8,
+    /// Rear-right motor PWM pin.
+    pub rear_right_pwm: u8,
+    /// Rear-right motor IN1 pin.
+    pub rear_right_in1: u8,
+    /// Rear-right motor IN2 pin.
+    pub rear_right_in2: u8,
+    /// Standby pin for driver 2 (HIGH to enable).
+    pub standby_2: u8,
+
     /// PWM frequency in Hz.
     pub pwm_frequency: f64,
     /// Wheel separation in meters.
@@ -117,18 +141,26 @@ pub struct MotorConfig {
     pub max_rpm: f64,
 }
 
-/// Quadrature encoder configuration.
+/// Quadrature encoder configuration for 4-wheel skid-steer.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct EncoderConfig {
-    /// Left encoder channel A pin.
-    pub left_a: u8,
-    /// Left encoder channel B pin.
-    pub left_b: u8,
-    /// Right encoder channel A pin.
-    pub right_a: u8,
-    /// Right encoder channel B pin.
-    pub right_b: u8,
+    /// Front-left encoder channel A pin.
+    pub front_left_a: u8,
+    /// Front-left encoder channel B pin.
+    pub front_left_b: u8,
+    /// Front-right encoder channel A pin.
+    pub front_right_a: u8,
+    /// Front-right encoder channel B pin.
+    pub front_right_b: u8,
+    /// Rear-left encoder channel A pin.
+    pub rear_left_a: u8,
+    /// Rear-left encoder channel B pin.
+    pub rear_left_b: u8,
+    /// Rear-right encoder channel A pin.
+    pub rear_right_a: u8,
+    /// Rear-right encoder channel B pin.
+    pub rear_right_b: u8,
     /// Pulses per revolution (after gearbox).
     pub pulses_per_rev: u32,
 }
@@ -270,14 +302,23 @@ impl Default for DockUartConfig {
 impl Default for MotorConfig {
     fn default() -> Self {
         Self {
-            // TB6612FNG pin assignments (BCM numbering)
-            left_pwm: 12,
-            left_in1: 5,
-            left_in2: 6,
-            right_pwm: 13,
-            right_in1: 16,
-            right_in2: 26,
-            standby: 17,
+            // TB6612FNG #1 — Front motors (BCM numbering)
+            front_left_pwm: 12,   // HW PWM0
+            front_left_in1: 5,
+            front_left_in2: 6,
+            front_right_pwm: 13,  // HW PWM1
+            front_right_in1: 16,
+            front_right_in2: 26,
+            standby_1: 17,
+
+            // TB6612FNG #2 — Rear motors (BCM numbering)
+            rear_left_pwm: 18,    // pigpio DMA PWM
+            rear_left_in1: 19,
+            rear_left_in2: 20,
+            rear_right_pwm: 21,   // pigpio DMA PWM
+            rear_right_in1: 25,
+            rear_right_in2: 8,
+            standby_2: 7,
 
             pwm_frequency: 1000.0,
             wheel_base: 0.298,   // CubeRover 2U wheel separation
@@ -290,10 +331,14 @@ impl Default for MotorConfig {
 impl Default for EncoderConfig {
     fn default() -> Self {
         Self {
-            left_a: 23,
-            left_b: 24,
-            right_a: 27,
-            right_b: 22,
+            front_left_a: 23,
+            front_left_b: 24,
+            front_right_a: 27,
+            front_right_b: 22,
+            rear_left_a: 9,
+            rear_left_b: 10,
+            rear_right_a: 11,
+            rear_right_b: 4,
             pulses_per_rev: 312, // JGA25-371, 26:1 gearbox, 12 PPR
         }
     }
@@ -382,17 +427,28 @@ impl RoverConfig {
 
         // Collect all GPIO pin assignments
         let pins = [
-            (self.hardware.motors.left_in1, "Motor Left IN1"),
-            (self.hardware.motors.left_in2, "Motor Left IN2"),
-            (self.hardware.motors.right_in1, "Motor Right IN1"),
-            (self.hardware.motors.right_in2, "Motor Right IN2"),
-            (self.hardware.motors.standby, "Motor Standby"),
-            (self.hardware.encoders.left_a, "Encoder Left A"),
-            (self.hardware.encoders.left_b, "Encoder Left B"),
-            (self.hardware.encoders.right_a, "Encoder Right A"),
-            (self.hardware.encoders.right_b, "Encoder Right B"),
-            (self.hardware.motors.left_pwm, "Motor Left PWM"),
-            (self.hardware.motors.right_pwm, "Motor Right PWM"),
+            (self.hardware.motors.front_left_pwm, "Motor FL PWM"),
+            (self.hardware.motors.front_left_in1, "Motor FL IN1"),
+            (self.hardware.motors.front_left_in2, "Motor FL IN2"),
+            (self.hardware.motors.front_right_pwm, "Motor FR PWM"),
+            (self.hardware.motors.front_right_in1, "Motor FR IN1"),
+            (self.hardware.motors.front_right_in2, "Motor FR IN2"),
+            (self.hardware.motors.standby_1, "Motor Standby 1"),
+            (self.hardware.motors.rear_left_pwm, "Motor RL PWM"),
+            (self.hardware.motors.rear_left_in1, "Motor RL IN1"),
+            (self.hardware.motors.rear_left_in2, "Motor RL IN2"),
+            (self.hardware.motors.rear_right_pwm, "Motor RR PWM"),
+            (self.hardware.motors.rear_right_in1, "Motor RR IN1"),
+            (self.hardware.motors.rear_right_in2, "Motor RR IN2"),
+            (self.hardware.motors.standby_2, "Motor Standby 2"),
+            (self.hardware.encoders.front_left_a, "Encoder FL A"),
+            (self.hardware.encoders.front_left_b, "Encoder FL B"),
+            (self.hardware.encoders.front_right_a, "Encoder FR A"),
+            (self.hardware.encoders.front_right_b, "Encoder FR B"),
+            (self.hardware.encoders.rear_left_a, "Encoder RL A"),
+            (self.hardware.encoders.rear_left_b, "Encoder RL B"),
+            (self.hardware.encoders.rear_right_a, "Encoder RR A"),
+            (self.hardware.encoders.rear_right_b, "Encoder RR B"),
         ];
 
         // Build usage map
@@ -434,17 +490,18 @@ impl RoverConfig {
             }
         }
 
-        // Check PWM pins are correct (fixed by hardware)
-        if self.hardware.motors.left_pwm != 12 && self.hardware.motors.left_pwm != 18 {
+        // Check front PWM pins are on hardware PWM channels.
+        // Rear PWM pins use pigpio DMA PWM and can be any GPIO.
+        if self.hardware.motors.front_left_pwm != 12 && self.hardware.motors.front_left_pwm != 18 {
             issues.push(format!(
-                "Left PWM pin GPIO{} is not a hardware PWM pin (must be 12 or 18 for PWM0)",
-                self.hardware.motors.left_pwm
+                "Front-left PWM pin GPIO{} is not a hardware PWM pin (must be 12 or 18 for PWM0)",
+                self.hardware.motors.front_left_pwm
             ));
         }
-        if self.hardware.motors.right_pwm != 13 && self.hardware.motors.right_pwm != 19 {
+        if self.hardware.motors.front_right_pwm != 13 && self.hardware.motors.front_right_pwm != 19 {
             issues.push(format!(
-                "Right PWM pin GPIO{} is not a hardware PWM pin (must be 13 or 19 for PWM1)",
-                self.hardware.motors.right_pwm
+                "Front-right PWM pin GPIO{} is not a hardware PWM pin (must be 13 or 19 for PWM1)",
+                self.hardware.motors.front_right_pwm
             ));
         }
 

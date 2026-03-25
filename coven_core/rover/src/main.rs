@@ -260,27 +260,28 @@ async fn run_diagnostics(config: RoverConfig) -> Result<()> {
     info!("  Coven: {}", config.coven_name);
     info!("  Dock UART: {} @ {} baud", config.dock_uart.port, config.dock_uart.baud_rate);
     info!("");
-    info!("  GPIO Assignments:");
+    info!("  GPIO Assignments (4-wheel skid-steer):");
     info!(
-        "    Motors: PWM L=GPIO{} R=GPIO{}",
-        config.hardware.motors.left_pwm, config.hardware.motors.right_pwm
+        "    Driver 1 (front): FL PWM=GPIO{}, FR PWM=GPIO{}, STBY=GPIO{}",
+        config.hardware.motors.front_left_pwm,
+        config.hardware.motors.front_right_pwm,
+        config.hardware.motors.standby_1
     );
     info!(
-        "    Motor Dir L: IN1=GPIO{} IN2=GPIO{}",
-        config.hardware.motors.left_in1, config.hardware.motors.left_in2
+        "    Driver 2 (rear):  RL PWM=GPIO{}, RR PWM=GPIO{}, STBY=GPIO{}",
+        config.hardware.motors.rear_left_pwm,
+        config.hardware.motors.rear_right_pwm,
+        config.hardware.motors.standby_2
     );
     info!(
-        "    Motor Dir R: IN1=GPIO{} IN2=GPIO{}",
-        config.hardware.motors.right_in1, config.hardware.motors.right_in2
-    );
-    info!("    Standby: GPIO{}", config.hardware.motors.standby);
-    info!(
-        "    Encoder L: A=GPIO{} B=GPIO{}",
-        config.hardware.encoders.left_a, config.hardware.encoders.left_b
+        "    Encoder FL: A=GPIO{} B=GPIO{}, FR: A=GPIO{} B=GPIO{}",
+        config.hardware.encoders.front_left_a, config.hardware.encoders.front_left_b,
+        config.hardware.encoders.front_right_a, config.hardware.encoders.front_right_b
     );
     info!(
-        "    Encoder R: A=GPIO{} B=GPIO{}",
-        config.hardware.encoders.right_a, config.hardware.encoders.right_b
+        "    Encoder RL: A=GPIO{} B=GPIO{}, RR: A=GPIO{} B=GPIO{}",
+        config.hardware.encoders.rear_left_a, config.hardware.encoders.rear_left_b,
+        config.hardware.encoders.rear_right_a, config.hardware.encoders.rear_right_b
     );
     info!("    LiDAR: {}", config.hardware.lidar.port);
     info!(

@@ -72,25 +72,34 @@ struct Encoder {
     ticks: Arc<AtomicI64>,
 }
 
-/// Dual encoder reader for differential drive.
+/// 4-wheel encoder reader for skid-steer drive.
+///
+/// Reads all 4 encoders independently, then averages front+rear per side
+/// to produce left/right tick counts for odometry. This provides more
+/// robust odometry (averages out individual wheel slip) while maintaining
+/// the same public API as a 2-encoder differential drive.
 pub struct EncoderReader {
-    /// Left wheel encoder.
-    left: Encoder,
-    /// Right wheel encoder.
-    right: Encoder,
+    /// Front-left wheel encoder.
+    front_left: Encoder,
+    /// Front-right wheel encoder.
+    front_right: Encoder,
+    /// Rear-left wheel encoder.
+    rear_left: Encoder,
+    /// Rear-right wheel encoder.
+    rear_right: Encoder,
     /// Wheel radius in meters.
     wheel_radius: f64,
     /// Wheel base (track width) in meters.
     wheel_base: f64,
     /// Distance traveled per encoder tick in meters.
     meters_per_tick: f64,
-    /// Last recorded left wheel ticks (for odometry).
+    /// Last recorded left-side averaged ticks (for odometry).
     last_left_ticks: i64,
-    /// Last recorded right wheel ticks (for odometry).
+    /// Last recorded right-side averaged ticks (for odometry).
     last_right_ticks: i64,
-    /// Last recorded left wheel ticks (for raw delta collection).
+    /// Last recorded left-side averaged ticks (for raw delta collection).
     last_delta_left_ticks: i64,
-    /// Last recorded right wheel ticks (for raw delta collection).
+    /// Last recorded right-side averaged ticks (for raw delta collection).
     last_delta_right_ticks: i64,
     /// Timestamp of last update.
     last_time: Instant,
@@ -129,27 +138,42 @@ impl EncoderReader {
             meters_per_tick * 1000.0
         );
 
-        // Initialize left encoder
-        let left = Self::setup_encoder_channel(
+        // Initialize all 4 encoders
+        let front_left = Self::setup_encoder_channel(
             &gpio,
-            "left",
-            encoder_config.left_a,
-            encoder_config.left_b,
+            "front-left",
+            encoder_config.front_left_a,
+            encoder_config.front_left_b,
         )?;
 
-        // Initialize right encoder
-        let right = Self::setup_encoder_channel(
+        let front_right = Self::setup_encoder_channel(
             &gpio,
-            "right",
-            encoder_config.right_a,
-            encoder_config.right_b,
+            "front-right",
+            encoder_config.front_right_a,
+            encoder_config.front_right_b,
         )?;
 
-        info!("Encoders initialized - interrupts active on 4 GPIO pins");
+        let rear_left = Self::setup_encoder_channel(
+            &gpio,
+            "rear-left",
+            encoder_config.rear_left_a,
+            encoder_config.rear_left_b,
+        )?;
+
+        let rear_right = Self::setup_encoder_channel(
+            &gpio,
+            "rear-right",
+            encoder_config.rear_right_a,
+            encoder_config.rear_right_b,
+        )?;
+
+        info!("Encoders initialized - interrupts active on 8 GPIO pins (4 wheels)");
 
         Ok(Self {
-            left,
-            right,
+            front_left,
+            front_right,
+            rear_left,
+            rear_right,
             wheel_radius,
             wheel_base,
             meters_per_tick,
@@ -286,18 +310,39 @@ impl EncoderReader {
         })
     }
 
-    /// Get current tick counts.
+    /// Get current tick counts, averaged per side (front+rear).
+    ///
+    /// Returns (left_avg, right_avg) where each is the average of
+    /// front and rear encoder ticks for that side.
     pub fn get_ticks(&self) -> (i64, i64) {
-        let left = self.left.ticks.load(Ordering::Relaxed);
-        let right = self.right.ticks.load(Ordering::Relaxed);
+        let fl = self.front_left.ticks.load(Ordering::Relaxed);
+        let rl = self.rear_left.ticks.load(Ordering::Relaxed);
+        let fr = self.front_right.ticks.load(Ordering::Relaxed);
+        let rr = self.rear_right.ticks.load(Ordering::Relaxed);
+        let left = (fl + rl) / 2;
+        let right = (fr + rr) / 2;
         (left, right)
+    }
+
+    /// Get raw tick counts for all 4 encoders individually.
+    ///
+    /// Returns (front_left, front_right, rear_left, rear_right).
+    #[allow(dead_code)]
+    pub fn get_ticks_all(&self) -> (i64, i64, i64, i64) {
+        let fl = self.front_left.ticks.load(Ordering::Relaxed);
+        let fr = self.front_right.ticks.load(Ordering::Relaxed);
+        let rl = self.rear_left.ticks.load(Ordering::Relaxed);
+        let rr = self.rear_right.ticks.load(Ordering::Relaxed);
+        (fl, fr, rl, rr)
     }
 
     /// Reset tick counts to zero.
     #[allow(dead_code)]
     pub fn reset(&mut self) {
-        self.left.ticks.store(0, Ordering::Relaxed);
-        self.right.ticks.store(0, Ordering::Relaxed);
+        self.front_left.ticks.store(0, Ordering::Relaxed);
+        self.front_right.ticks.store(0, Ordering::Relaxed);
+        self.rear_left.ticks.store(0, Ordering::Relaxed);
+        self.rear_right.ticks.store(0, Ordering::Relaxed);
         self.last_left_ticks = 0;
         self.last_right_ticks = 0;
         self.last_delta_left_ticks = 0;

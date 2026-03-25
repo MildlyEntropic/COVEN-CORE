@@ -77,20 +77,18 @@ impl Hardware {
         info!("========== HARDWARE INITIALIZATION ==========");
         info!("Initializing hardware for rover: {}", config.rover_id);
 
-        // --- Motor Controller ---
-        info!("--- Motor Controller ---");
-        info!(
-            "  PWM pins: left=GPIO{} (PWM0), right=GPIO{} (PWM1)",
-            config.hardware.motors.left_pwm, config.hardware.motors.right_pwm
+        // --- Motor Controller (4-wheel skid-steer) ---
+        info!("--- Motor Controller (4-wheel skid-steer) ---");
+        info!("  Driver 1 (front): FL PWM=GPIO{}, FR PWM=GPIO{}, STBY=GPIO{}",
+            config.hardware.motors.front_left_pwm,
+            config.hardware.motors.front_right_pwm,
+            config.hardware.motors.standby_1,
         );
-        info!(
-            "  Direction pins: left=GPIO{}/{}, right=GPIO{}/{}",
-            config.hardware.motors.left_in1,
-            config.hardware.motors.left_in2,
-            config.hardware.motors.right_in1,
-            config.hardware.motors.right_in2
+        info!("  Driver 2 (rear):  RL PWM=GPIO{}, RR PWM=GPIO{}, STBY=GPIO{}",
+            config.hardware.motors.rear_left_pwm,
+            config.hardware.motors.rear_right_pwm,
+            config.hardware.motors.standby_2,
         );
-        info!("  Standby pin: GPIO{}", config.hardware.motors.standby);
         info!(
             "  PWM frequency: {} Hz",
             config.hardware.motors.pwm_frequency
@@ -103,15 +101,23 @@ impl Hardware {
             .context("Failed to initialize motor controller")?;
         info!("  [OK] Motor controller initialized successfully");
 
-        // --- Encoders ---
-        info!("--- Encoders ---");
+        // --- Encoders (4 wheels) ---
+        info!("--- Encoders (4 wheels) ---");
         info!(
-            "  Left encoder: A=GPIO{}, B=GPIO{}",
-            config.hardware.encoders.left_a, config.hardware.encoders.left_b
+            "  FL encoder: A=GPIO{}, B=GPIO{}",
+            config.hardware.encoders.front_left_a, config.hardware.encoders.front_left_b
         );
         info!(
-            "  Right encoder: A=GPIO{}, B=GPIO{}",
-            config.hardware.encoders.right_a, config.hardware.encoders.right_b
+            "  FR encoder: A=GPIO{}, B=GPIO{}",
+            config.hardware.encoders.front_right_a, config.hardware.encoders.front_right_b
+        );
+        info!(
+            "  RL encoder: A=GPIO{}, B=GPIO{}",
+            config.hardware.encoders.rear_left_a, config.hardware.encoders.rear_left_b
+        );
+        info!(
+            "  RR encoder: A=GPIO{}, B=GPIO{}",
+            config.hardware.encoders.rear_right_a, config.hardware.encoders.rear_right_b
         );
         info!(
             "  Pulses per rev: {}",
@@ -133,8 +139,8 @@ impl Hardware {
         // --- Summary ---
         info!("========== HARDWARE INIT COMPLETE ==========");
         info!("All hardware components initialized successfully!");
-        info!("  Motors: READY");
-        info!("  Encoders: READY");
+        info!("  Motors: READY (4-wheel skid-steer, 2× TB6612FNG)");
+        info!("  Encoders: READY (4× quadrature)");
         info!("============================================");
 
         Ok(Self { motors, encoders })

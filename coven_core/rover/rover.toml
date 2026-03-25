@@ -13,26 +13,44 @@ port = "/dev/ttyGS0"       # USB gadget serial (MVP)
 baud_rate = 115200
 
 [hardware.motors]
-# TB6612FNG pin assignments (BCM numbering)
-left_pwm = 12
-left_in1 = 5
-left_in2 = 6
-right_pwm = 13
-right_in1 = 16
-right_in2 = 26
-standby = 17
+# 4-wheel skid-steer: 2× TB6612FNG, independent motor control
+# Pin assignments in BCM numbering
+# For normal driving, command FL=RL (left side) and FR=RR (right side)
+
+# TB6612FNG #1 — Front motors
+front_left_pwm = 12    # HW PWM0
+front_left_in1 = 5
+front_left_in2 = 6
+front_right_pwm = 13   # HW PWM1
+front_right_in1 = 16
+front_right_in2 = 26
+standby_1 = 17
+
+# TB6612FNG #2 — Rear motors
+rear_left_pwm = 18     # pigpio DMA PWM
+rear_left_in1 = 19
+rear_left_in2 = 20
+rear_right_pwm = 21    # pigpio DMA PWM
+rear_right_in1 = 25
+rear_right_in2 = 8
+standby_2 = 7
 
 pwm_frequency = 1000.0
-wheel_base = 0.298     # meters (CubeRover 2U)
+wheel_base = 0.298     # meters (CubeRover 2U, center-to-center)
 wheel_radius = 0.0325  # meters (65mm diameter wheels)
 max_rpm = 130.0
 
 [hardware.encoders]
 # Quadrature encoder pins (BCM numbering)
-left_a = 23
-left_b = 24
-right_a = 27
-right_b = 22
+# JGA25-371 Hall effect, 12 PPR × 26:1 gearbox = 312 PPR
+front_left_a = 23
+front_left_b = 24
+front_right_a = 27
+front_right_b = 22
+rear_left_a = 9
+rear_left_b = 10
+rear_right_a = 11
+rear_right_b = 4
 
 pulses_per_rev = 312   # JGA25-371, 26:1 gearbox, 12 PPR
 
