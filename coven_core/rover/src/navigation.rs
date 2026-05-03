@@ -100,6 +100,19 @@ pub struct Goal {
     pub x: f64,
     /// Y position in meters.
     pub y: f64,
+    /// Per-goal tolerance in meters. Zero or negative means "fall back to
+    /// the navigator's `NavParams::goal_tolerance`". This lets a TASK_REQ
+    /// `Waypoint::tolerance` override the global default for a specific
+    /// waypoint without touching the firmware's nav config.
+    pub tolerance: f64,
+}
+
+impl Goal {
+    /// Construct a goal at (x, y) with no per-goal tolerance — falls
+    /// back to the navigator's default.
+    pub fn at(x: f64, y: f64) -> Self {
+        Self { x, y, tolerance: 0.0 }
+    }
 }
 
 /// Navigation output - velocity command for differential drive.
@@ -147,9 +160,31 @@ impl LyapunovNavigator {
         Self { params, goal: None }
     }
 
-    /// Set the current goal.
+    /// Set the current goal at (x, y), using the navigator's default
+    /// goal-reached tolerance. Convenience wrapper for callers that don't
+    /// need per-goal tolerance overrides.
     pub fn set_goal(&mut self, x: f64, y: f64) {
-        self.goal = Some(Goal { x, y });
+        self.goal = Some(Goal::at(x, y));
+    }
+
+    /// Set the current goal at (x, y) with an explicit per-goal tolerance.
+    /// `tolerance > 0` overrides `NavParams::goal_tolerance` for this goal;
+    /// `tolerance <= 0` falls back to the default.
+    #[allow(dead_code)] // Wire-up for the WaypointFollower path; direct
+                       // callers can keep using `set_goal`.
+    pub fn set_goal_with_tolerance(&mut self, x: f64, y: f64, tolerance: f64) {
+        self.goal = Some(Goal { x, y, tolerance });
+    }
+
+    /// Effective goal-reached tolerance for the currently-active goal:
+    /// the goal's per-goal override if positive, otherwise the navigator
+    /// default.
+    fn effective_tolerance(&self, goal: &Goal) -> f64 {
+        if goal.tolerance > 0.0 {
+            goal.tolerance
+        } else {
+            self.params.goal_tolerance
+        }
     }
 
     /// Clear the current goal (stop navigating).
@@ -163,13 +198,15 @@ impl LyapunovNavigator {
         self.goal.is_some()
     }
 
-    /// Check if goal is reached.
+    /// Check if goal is reached. Uses the per-goal tolerance if the
+    /// active `Goal` has one set; otherwise falls back to
+    /// `NavParams::goal_tolerance`.
     pub fn goal_reached(&self, robot_x: f64, robot_y: f64) -> bool {
         if let Some(goal) = &self.goal {
             let dx = goal.x - robot_x;
             let dy = goal.y - robot_y;
             let dist = (dx * dx + dy * dy).sqrt();
-            dist < self.params.goal_tolerance
+            dist < self.effective_tolerance(goal)
         } else {
             false
         }
@@ -196,12 +233,12 @@ impl LyapunovNavigator {
             None => return VelocityCmd::stop(),
         };
 
-        // Check if goal reached
+        // Check if goal reached (per-goal tolerance, falls back to default)
         let dx_goal = goal.x - robot_x;
         let dy_goal = goal.y - robot_y;
         let dist_to_goal = (dx_goal * dx_goal + dy_goal * dy_goal).sqrt();
 
-        if dist_to_goal < self.params.goal_tolerance {
+        if dist_to_goal < self.effective_tolerance(goal) {
             return VelocityCmd::stop();
         }
 
@@ -285,7 +322,11 @@ impl LyapunovNavigator {
         let dy_goal = goal.y - robot_y;
         let dist_to_goal = (dx_goal * dx_goal + dy_goal * dy_goal).sqrt();
 
-        if dist_to_goal < self.params.goal_tolerance {
+        // Use per-goal tolerance if specified; otherwise the nav default.
+        // This is what stops the spin-and-drift limit cycle: once the rover
+        // is within the task's declared tolerance, we emit a clean stop
+        // instead of trying to converge below the nav's tighter default.
+        if dist_to_goal < self.effective_tolerance(goal) {
             return VelocityCmd::stop();
         }
 
@@ -509,13 +550,31 @@ impl WaypointFollower {
         }
     }
 
-    /// Set waypoints to follow.
+    /// Set waypoints to follow. Each waypoint inherits the navigator's
+    /// default goal-reached tolerance (`NavParams::goal_tolerance`).
     pub fn set_waypoints(&mut self, waypoints: Vec<(f64, f64)>) {
-        self.waypoints = waypoints.into_iter().map(|(x, y)| Goal { x, y }).collect();
+        self.set_waypoints_with_tolerances(
+            waypoints.into_iter().map(|(x, y)| (x, y, 0.0)).collect()
+        );
+    }
+
+    /// Set waypoints with per-waypoint tolerances. A tolerance of 0.0
+    /// (or negative) falls back to the navigator's default; a positive
+    /// value overrides for that specific waypoint. This is the path the
+    /// task-execution code uses to honor the protocol's
+    /// `Waypoint::tolerance` field from a TASK_REQ.
+    pub fn set_waypoints_with_tolerances(
+        &mut self,
+        waypoints: Vec<(f64, f64, f64)>,
+    ) {
+        self.waypoints = waypoints
+            .into_iter()
+            .map(|(x, y, tolerance)| Goal { x, y, tolerance })
+            .collect();
         self.current_idx = 0;
         if !self.waypoints.is_empty() {
             let wp = self.waypoints[0];
-            self.navigator.set_goal(wp.x, wp.y);
+            self.navigator.set_goal_with_tolerance(wp.x, wp.y, wp.tolerance);
             self.state = NavState::Navigating;
         } else {
             self.navigator.clear_goal();
@@ -524,9 +583,10 @@ impl WaypointFollower {
         self.stuck_detector.reset();
     }
 
-    /// Set dock return position (final destination).
+    /// Set dock return position (final destination). Uses the navigator's
+    /// default tolerance — the dock is fixed and the default is appropriate.
     pub fn set_dock_position(&mut self, x: f64, y: f64) {
-        self.waypoints.push(Goal { x, y });
+        self.waypoints.push(Goal::at(x, y));
     }
 
     /// Get current navigation state.
@@ -563,9 +623,9 @@ impl WaypointFollower {
                 return VelocityCmd::stop();
             }
 
-            // Move to next waypoint
+            // Move to next waypoint, carrying its per-waypoint tolerance.
             let wp = self.waypoints[self.current_idx];
-            self.navigator.set_goal(wp.x, wp.y);
+            self.navigator.set_goal_with_tolerance(wp.x, wp.y, wp.tolerance);
             self.stuck_detector.reset();
         }
 
@@ -702,6 +762,79 @@ mod tests {
         assert!(!nav.goal_reached(0.0, 0.0));
         assert!(nav.goal_reached(1.0, 0.0));
         assert!(nav.goal_reached(1.05, 0.05)); // Within tolerance
+    }
+
+    /// Per-waypoint tolerance must override the navigator's default.
+    /// Pins the protocol's `Waypoint::tolerance` plumbing so a future
+    /// regression of the (state.rs)→(navigator) wire-up fails this test.
+    #[test]
+    fn test_per_waypoint_tolerance_overrides_default() {
+        // Default tolerance is 0.1 m (NavParams::default).
+        let mut nav = LyapunovNavigator::new();
+
+        // Goal at (1.0, 0) with explicit 0.3 tolerance → robot at 0.85 is
+        // 0.15 from goal, which is OUTSIDE the default 0.1 but INSIDE the
+        // per-goal 0.3. Without the per-goal override the assertion fails.
+        nav.set_goal_with_tolerance(1.0, 0.0, 0.3);
+        assert!(
+            nav.goal_reached(0.85, 0.0),
+            "per-waypoint tolerance 0.3 should accept robot at 0.15 m from goal"
+        );
+
+        // Inverse: tolerance=0 (or negative) must fall back to the default.
+        nav.set_goal_with_tolerance(1.0, 0.0, 0.0);
+        assert!(
+            !nav.goal_reached(0.85, 0.0),
+            "tolerance=0 should fall back to default 0.1 m, which rejects 0.15"
+        );
+        nav.set_goal_with_tolerance(1.0, 0.0, -1.0);
+        assert!(
+            !nav.goal_reached(0.85, 0.0),
+            "negative tolerance should also fall back to the default"
+        );
+    }
+
+    /// `Goal::at` constructs a default-tolerance goal — pinned because
+    /// callers in subsumption.rs rely on this shorthand.
+    #[test]
+    fn test_goal_at_constructor() {
+        let g = Goal::at(2.0, 3.0);
+        assert_eq!(g.x, 2.0);
+        assert_eq!(g.y, 3.0);
+        assert_eq!(g.tolerance, 0.0, "Goal::at must use default tolerance (0.0)");
+    }
+
+    /// WaypointFollower must advance through a sequence of waypoints with
+    /// per-waypoint tolerances. This is the integration test for the
+    /// state.rs → navigator wire-up. Pre-fix, an over-tight default
+    /// tolerance could cause the rover to limit-cycle at the first
+    /// waypoint and never advance to the second.
+    #[test]
+    fn test_waypoint_follower_advances_with_per_waypoint_tolerance() {
+        let mut follower = WaypointFollower::new();
+        // Two waypoints: first with 0.3 tolerance, then dock at origin.
+        follower.set_waypoints_with_tolerances(vec![
+            (1.0, 0.0, 0.3),
+            (0.0, 0.0, 0.0), // 0 = use default
+        ]);
+        assert_eq!(follower.state(), NavState::Navigating);
+        assert_eq!(follower.progress(), (0, 2));
+
+        // Robot at 0.85, 0.0 — within 0.3 of waypoint #1 (1.0, 0.0).
+        // First update must advance to waypoint #2.
+        let _ = follower.update(0.85, 0.0, 0.0);
+        assert_eq!(
+            follower.progress().0, 1,
+            "follower should advance to waypoint #2 once #1 is within tolerance"
+        );
+
+        // Now drive to dock — robot near (0,0) should hit Arrived.
+        let _ = follower.update(0.05, 0.0, 0.0);
+        assert_eq!(
+            follower.state(),
+            NavState::Arrived,
+            "follower should be Arrived after reaching the final waypoint"
+        );
     }
 
     #[test]

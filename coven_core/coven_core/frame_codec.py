@@ -65,6 +65,7 @@ SENSOR_TYPE_LIDAR = 0x01
 SENSOR_TYPE_CAMERA = 0x02
 SENSOR_TYPE_SPECTROMETER = 0x03
 SENSOR_TYPE_DRILL = 0x04
+SENSOR_TYPE_BAROMETER = 0x05
 
 # Module type bytes (matches dock_uart.rs encode_message)
 MODULE_TYPE_MAP = {
@@ -125,6 +126,7 @@ def _cobs_encode(data: bytes) -> bytes:
     """COBS encode: guarantees no 0x00 bytes in output."""
     output = bytearray()
     idx = 0
+    last_was_zero = False
 
     while idx < len(data):
         # Find next zero byte (or end of data)
@@ -134,23 +136,30 @@ def _cobs_encode(data: bytes) -> bytes:
 
         block_len = next_zero - idx
 
-        # Handle blocks > 253 bytes (need to split with 0xFF code)
+        # Handle blocks > 253 bytes (need to split with 0xFF code, no implicit zero)
         while block_len > 253:
             output.append(0xFF)
             output.extend(data[idx:idx + 254])
             idx += 254
             block_len -= 254
 
-        # Write code byte + block
+        # Write code byte + block (implicit zero terminator follows if more data)
         output.append(block_len + 1)
         output.extend(data[idx:idx + block_len])
         idx += block_len
 
-        # Skip past the zero byte (if one exists)
+        # Consume the zero byte if present.
         if idx < len(data) and data[idx] == 0:
             idx += 1
+            last_was_zero = True
         else:
-            break
+            last_was_zero = False
+
+    # If the input ended in a zero, emit a final code byte to denote it.
+    # Without this, the decoder cannot distinguish a payload ending in zero
+    # from one that does not. (Standard COBS trailing-zero handling.)
+    if last_was_zero:
+        output.append(0x01)
 
     return bytes(output)
 
@@ -612,11 +621,19 @@ def _decode_verify_rep(data: bytes) -> Optional[dict]:
 
 
 def _decode_task_json(data: bytes) -> Optional[dict]:
-    """Decode TASK_MESSAGE (JSON within DATA_FRAME subtype 0x10)."""
+    """Decode TASK_MESSAGE (JSON within DATA_FRAME subtype 0x10).
+
+    Production traffic in this direction is rover→dock (TaskAck/Start/
+    Complete), but the wire format is symmetric and a sim rover proxy
+    needs to decode the dock→rover TaskReq variant too. We handle both.
+    """
     try:
         msg = json.loads(data.decode('utf-8'))
         # Tag with type for dispatch
-        if "TaskAck" in msg:
+        if "TaskReq" in msg:
+            inner = msg["TaskReq"]
+            return {"type": "TASK_REQ", **inner}
+        elif "TaskAck" in msg:
             inner = msg["TaskAck"]
             return {"type": "TASK_ACK", **inner}
         elif "TaskStart" in msg:

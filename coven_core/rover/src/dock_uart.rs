@@ -122,6 +122,7 @@ impl MessageType {
 fn cobs_encode(data: &[u8]) -> Vec<u8> {
     let mut output = Vec::with_capacity(data.len() + data.len() / 254 + 1);
     let mut idx = 0;
+    let mut last_was_zero = false;
 
     while idx < data.len() {
         // Find next zero byte (or end of data)
@@ -131,7 +132,7 @@ fn cobs_encode(data: &[u8]) -> Vec<u8> {
 
         let mut block_len = next_zero - idx;
 
-        // Handle blocks > 253 bytes
+        // Handle blocks > 253 bytes (no implicit zero terminator)
         while block_len > 253 {
             output.push(0xFF);
             output.extend_from_slice(&data[idx..idx + 254]);
@@ -139,17 +140,25 @@ fn cobs_encode(data: &[u8]) -> Vec<u8> {
             block_len -= 254;
         }
 
-        // Write code byte + block
+        // Write code byte + block (implicit zero terminator follows if more data)
         output.push((block_len + 1) as u8);
         output.extend_from_slice(&data[idx..idx + block_len]);
         idx += block_len;
 
-        // Skip past zero byte if present
+        // Consume the zero byte if present.
         if idx < data.len() && data[idx] == 0 {
             idx += 1;
+            last_was_zero = true;
         } else {
-            break;
+            last_was_zero = false;
         }
+    }
+
+    // If the input ended in a zero, emit a final code byte to denote it.
+    // Without this, the decoder cannot distinguish a payload ending in zero
+    // from one that does not. (Standard COBS trailing-zero handling.)
+    if last_was_zero {
+        output.push(0x01);
     }
 
     output
@@ -1281,6 +1290,220 @@ fn parse_data_frame(payload: &[u8]) -> Result<Option<DockMessage>> {
             trace!("Unknown DATA_FRAME subtype: 0x{:02X}", subtype);
             Ok(None)
         }
+    }
+}
+
+// ------------------------
+// --- Tests ---
+// ------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::protocol::Waypoint;
+
+    /// Helper: round-trip a payload through COBS encode/decode.
+    fn cobs_roundtrip(data: &[u8]) -> Vec<u8> {
+        let encoded = cobs_encode(data);
+        // COBS guarantee: no 0x00 bytes in encoded output
+        assert!(
+            !encoded.contains(&0u8),
+            "COBS-encoded data must not contain 0x00 (input: {:?})",
+            data
+        );
+        cobs_decode(&encoded).expect("decode after our own encode must succeed")
+    }
+
+    #[test]
+    fn cobs_roundtrip_empty() {
+        let data: &[u8] = &[];
+        assert_eq!(cobs_roundtrip(data), data);
+    }
+
+    #[test]
+    fn cobs_roundtrip_single_nonzero() {
+        let data: &[u8] = &[0x42];
+        assert_eq!(cobs_roundtrip(data), data);
+    }
+
+    #[test]
+    fn cobs_roundtrip_single_zero() {
+        let data: &[u8] = &[0x00];
+        assert_eq!(cobs_roundtrip(data), data);
+    }
+
+    #[test]
+    fn cobs_roundtrip_all_zeros() {
+        let data: &[u8] = &[0x00, 0x00, 0x00];
+        assert_eq!(cobs_roundtrip(data), data);
+    }
+
+    #[test]
+    fn cobs_roundtrip_no_zeros_short() {
+        let data: &[u8] = &[0x01, 0x02, 0x03, 0x04, 0x05];
+        assert_eq!(cobs_roundtrip(data), data);
+    }
+
+    #[test]
+    fn cobs_roundtrip_zeros_at_boundaries() {
+        let data: &[u8] = &[0x00, 0x01, 0x02, 0x00, 0x03, 0x04, 0x00];
+        assert_eq!(cobs_roundtrip(data), data);
+    }
+
+    #[test]
+    fn cobs_roundtrip_long_run_no_zeros() {
+        // 300 bytes of nonzero data exercises the >253-byte block path
+        let data: Vec<u8> = (0..300u32).map(|i| ((i % 250) + 1) as u8).collect();
+        assert_eq!(cobs_roundtrip(&data), data);
+    }
+
+    #[test]
+    fn cobs_roundtrip_max_block() {
+        // Exactly 254 bytes of nonzero data (the COBS block boundary)
+        let data: Vec<u8> = (1..=254u8).collect();
+        assert_eq!(cobs_roundtrip(&data), data);
+    }
+
+    #[test]
+    fn cobs_encoded_never_contains_zero() {
+        // Property: regardless of input, encoded output has no 0x00 bytes.
+        for n in 0..100 {
+            let data: Vec<u8> = (0..n).map(|i| if i % 3 == 0 { 0u8 } else { (i + 1) as u8 }).collect();
+            let encoded = cobs_encode(&data);
+            assert!(
+                !encoded.contains(&0u8),
+                "encoded form of {:?} unexpectedly contained 0x00",
+                data
+            );
+        }
+    }
+
+    #[test]
+    fn cobs_decode_rejects_unexpected_zero() {
+        // A 0x00 byte mid-stream is malformed — decode must fail, not panic.
+        let bad = vec![0x03, 0x01, 0x00, 0x02];
+        assert!(cobs_decode(&bad).is_err());
+    }
+
+    #[test]
+    fn cobs_decode_rejects_truncated() {
+        // Code byte announces 5 trailing bytes, but only 2 are present.
+        let bad = vec![0x06, 0xAA, 0xBB];
+        assert!(cobs_decode(&bad).is_err());
+    }
+
+    #[test]
+    fn frame_roundtrip_single_byte_payload() {
+        // Build a frame with a known type+payload, then strip headers and decode.
+        let frame = build_single_frame(0xFF, &[]).expect("frame build");
+        // Frame layout: [LEN_HI][LEN_LO][COBS data][0x00]
+        assert_eq!(frame[frame.len() - 1], 0x00, "frame must end with 0x00");
+        let len = ((frame[0] as usize) << 8) | (frame[1] as usize);
+        let cobs_data = &frame[2..2 + len];
+        let raw = cobs_decode(cobs_data).expect("inner decode");
+        // raw layout: [TYPE][PAYLOAD][CRC]; here PAYLOAD is empty so raw is [TYPE][CRC] and CRC = TYPE.
+        assert_eq!(raw, vec![0xFF, 0xFF]);
+    }
+
+    #[test]
+    fn frame_crc_detects_single_bit_flip() {
+        // Build a real frame, flip a payload bit, confirm parse fails.
+        let frame = build_single_frame(0xFF, &[0x12, 0x34, 0x56]).expect("frame build");
+        let len = ((frame[0] as usize) << 8) | (frame[1] as usize);
+        let mut cobs_data = frame[2..2 + len].to_vec();
+        // Decode, flip a bit in payload region, re-encode, parse.
+        let mut raw = cobs_decode(&cobs_data).expect("decode");
+        raw[2] ^= 0x01; // flip a bit in payload
+        cobs_data = cobs_encode(&raw);
+        // parse_frame validates CRC; corrupted payload must fail.
+        assert!(parse_frame(&cobs_data).is_err());
+    }
+
+    /// Round-trip every variant of RoverMessage that goes through serde_json subtypes.
+    /// (Heartbeat, Identify, Verify, FaultAlert use their own bespoke encodings.)
+    #[test]
+    fn rover_message_json_roundtrip_task_messages() {
+        use crate::protocol::RoverMessage;
+        let messages = vec![
+            RoverMessage::TaskAck {
+                module_id: "witch_alpha".into(),
+                task_id: "t-001".into(),
+                success: true,
+            },
+            RoverMessage::TaskStart {
+                module_id: "witch_alpha".into(),
+                task_id: "t-001".into(),
+                timestamp: 12345.678,
+            },
+            RoverMessage::TaskComplete {
+                module_id: "witch_alpha".into(),
+                task_id: "t-001".into(),
+                success: true,
+                map_data: String::new(),
+                coverage: 0.87,
+                duration: 142.5,
+            },
+        ];
+        for original in messages {
+            let json = serde_json::to_vec(&original).expect("serialize");
+            let decoded: RoverMessage = serde_json::from_slice(&json).expect("deserialize");
+            // Spot-check the discriminant by re-serializing:
+            let json2 = serde_json::to_vec(&decoded).expect("re-serialize");
+            assert_eq!(json, json2, "round-trip changed serialized form");
+        }
+    }
+
+    /// Cover the full DockMessage → wire → DockMessage round-trip for the
+    /// IDENTIFY_REQUEST (0x01) message type, the entry point of the FSM.
+    #[test]
+    fn identify_request_roundtrip() {
+        // Build an IDENTIFY_REQUEST payload as the dock would.
+        // Per dock_uart parsing of 0x01: payload is [dock_id_len][dock_id_bytes][coven_name_len][coven_bytes][assigned_name_len][assigned_bytes].
+        let dock_id = b"dock_001";
+        let coven = b"The_Graeae";
+        let assigned: &[u8] = b"";
+        let mut payload = Vec::new();
+        payload.push(dock_id.len() as u8);
+        payload.extend_from_slice(dock_id);
+        payload.push(coven.len() as u8);
+        payload.extend_from_slice(coven);
+        payload.push(assigned.len() as u8);
+        payload.extend_from_slice(assigned);
+
+        let frame = build_single_frame(0x01, &payload).expect("frame build");
+        let len = ((frame[0] as usize) << 8) | (frame[1] as usize);
+        let cobs_data = &frame[2..2 + len];
+
+        let parsed = parse_frame(cobs_data).expect("parse").expect("non-None");
+        match parsed {
+            DockMessage::IdentifyReq {
+                dock_id: did,
+                dock_name,
+                assigned_name,
+            } => {
+                assert_eq!(did, "dock_001");
+                assert_eq!(dock_name, "The_Graeae");
+                assert_eq!(assigned_name, "");
+            }
+            other => panic!("expected IdentifyReq, got {:?}", other),
+        }
+    }
+
+    /// Sanity-check that Waypoint serde works (used inside TaskReq).
+    #[test]
+    fn waypoint_serde_roundtrip() {
+        let wp = Waypoint {
+            x: 1.5,
+            y: -2.25,
+            yaw: 0.785,
+            tolerance: 0.5,
+        };
+        let json = serde_json::to_vec(&wp).expect("ser");
+        let back: Waypoint = serde_json::from_slice(&json).expect("de");
+        assert_eq!(back.x, wp.x);
+        assert_eq!(back.y, wp.y);
+        assert_eq!(back.yaw, wp.yaw);
+        assert_eq!(back.tolerance, wp.tolerance);
     }
 }
 

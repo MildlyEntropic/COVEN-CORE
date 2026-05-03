@@ -1,21 +1,35 @@
 # COVEN-CORE ROS2 Jazzy Development Container
-# Dock-side only: ROS2 Jazzy, SLAM Toolbox, TF2
-# No Gazebo - rovers run Rust firmware, not simulation
+# Production rovers run Rust firmware on Pi Zero 2W. This container hosts:
+#   - The dock-side Python/ROS2 stack (rover_bridge, frontier_dispatcher,
+#     SLAM Toolbox, Nav2)
+#   - Gazebo Harmonic + ros_gz bridges (for sim rover orchestration)
+#   - The sim_rover_proxy node, which bridges Gazebo-simulated rovers to
+#     the dock over a virtual UART (PTY pair). This lets the dock run
+#     unmodified production code against simulated rovers.
 
 FROM osrf/ros:jazzy-desktop-full
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install ROS2 packages needed for dock operation
+# Install ROS2 packages needed for dock operation + simulation
 RUN apt-get update && apt-get install -y \
     # SLAM (dock processes sensor batches offline)
     ros-jazzy-slam-toolbox \
-    # Map server (for saving SLAM output)
+    # Nav2 (used by sim rovers when navigation is wired in)
+    ros-jazzy-navigation2 \
+    ros-jazzy-nav2-bringup \
     ros-jazzy-nav2-map-server \
     # TF and transforms
     ros-jazzy-tf2-ros \
     ros-jazzy-tf2-tools \
     ros-jazzy-tf-transformations \
+    # Gazebo Harmonic + ROS2 bridges (for rover simulation)
+    ros-jazzy-ros-gz \
+    ros-jazzy-ros-gz-bridge \
+    ros-jazzy-ros-gz-sim \
+    ros-jazzy-ros-gz-interfaces \
+    # PTY / virtual-serial helpers for the sim rover proxy
+    socat \
     # Visualization (for development/debugging)
     ros-jazzy-rviz2 \
     ros-jazzy-rqt* \

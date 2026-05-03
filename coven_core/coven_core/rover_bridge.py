@@ -537,11 +537,15 @@ class RoverBridge(Node):
                 wp_tuples.append((wp[0], wp[1]))
 
         task_type_map = {
-            "explore": TaskType.EXPLORE,
-            "spectral": TaskType.SPECTRAL,
-            "sample": TaskType.SAMPLE,
-            "deliver": TaskType.DELIVER,
-            "survey": TaskType.SURVEY,
+            "explore":       TaskType.EXPLORE,
+            "spectral":      TaskType.SPECTRAL,
+            "sample":        TaskType.SAMPLE,
+            "deliver":       TaskType.DELIVER,
+            "survey":        TaskType.SURVEY,
+            "barometric":    TaskType.BAROMETRIC,
+            "excavate":      TaskType.EXCAVATE,
+            "haul":          TaskType.HAUL,
+            "aerial_survey": TaskType.AERIAL_SURVEY,
         }
         task_type = task_type_map.get(task_type_str, TaskType.EXPLORE)
 

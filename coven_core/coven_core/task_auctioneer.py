@@ -55,53 +55,128 @@ class PayloadType(Enum):
     DRILL = "drill"
     CARGO = "cargo"
     CAMERA = "camera"
+    BAROMETER = "barometer"      # Atmospheric pressure / weather mapping
+    EXCAVATOR = "excavator"      # Heavy regolith displacement (deeper than drill)
+    HAULER = "hauler"            # Treaded heavy-cargo carrier
+    OPTICAL_DRONE = "optical_drone"  # Aerial 4-DOF optical platform
 
 
 class TaskType(Enum):
     """Mission task types."""
-    EXPLORE = "explore"  # General exploration (LIDAR)
-    SPECTRAL = "spectral"  # Spectral analysis
-    SAMPLE = "sample"  # Drilling/sampling
-    DELIVER = "deliver"  # Cargo delivery
-    SURVEY = "survey"  # Visual survey (camera)
+    EXPLORE = "explore"          # General exploration (LIDAR)
+    SPECTRAL = "spectral"        # Spectral analysis
+    SAMPLE = "sample"            # Drilling/sampling
+    DELIVER = "deliver"          # Cargo delivery
+    SURVEY = "survey"            # Visual survey (camera)
+    BAROMETRIC = "barometric"    # Atmospheric pressure profile
+    EXCAVATE = "excavate"        # Bulk regolith excavation / trenching
+    HAUL = "haul"                # Heavy-payload transport
+    AERIAL_SURVEY = "aerial_survey"  # Aerial / overhead optical reconnaissance
 
 
-# Payload compatibility matrix: which payloads can do which tasks
+# Payload compatibility matrix: which payloads can do which tasks.
+# Adding a payload type or task type requires only adding rows/columns
+# here — the dispatch algorithm itself (RoverInfo.calculate_bid) reads
+# this table as data and does not branch on concrete payload type.
 PAYLOAD_TASK_COMPATIBILITY: Dict[PayloadType, Dict[TaskType, int]] = {
     PayloadType.LIDAR: {
-        TaskType.EXPLORE: -25,  # Perfect match
-        TaskType.SPECTRAL: 999999,  # Can't do
-        TaskType.SAMPLE: 999999,
-        TaskType.DELIVER: 50,  # Can navigate but not ideal
-        TaskType.SURVEY: 10,  # Suboptimal
+        TaskType.EXPLORE:       -25,    # Perfect match
+        TaskType.SPECTRAL:      999999, # No spectrometer
+        TaskType.SAMPLE:        999999, # No drill
+        TaskType.DELIVER:       50,     # Can navigate but not ideal
+        TaskType.SURVEY:        10,     # Suboptimal
+        TaskType.BAROMETRIC:    999999, # No barometer
+        TaskType.EXCAVATE:      999999, # No excavator
+        TaskType.HAUL:          999999, # No cargo bay
+        TaskType.AERIAL_SURVEY: 999999, # Not aerial
     },
     PayloadType.SPECTROMETER: {
-        TaskType.EXPLORE: 10,  # Can explore, not ideal
-        TaskType.SPECTRAL: -25,  # Born for this
-        TaskType.SAMPLE: 999999,
-        TaskType.DELIVER: 50,
-        TaskType.SURVEY: 20,
+        TaskType.EXPLORE:       10,     # Can explore, not ideal
+        TaskType.SPECTRAL:      -25,    # Born for this
+        TaskType.SAMPLE:        999999,
+        TaskType.DELIVER:       50,
+        TaskType.SURVEY:        20,
+        TaskType.BAROMETRIC:    999999,
+        TaskType.EXCAVATE:      999999,
+        TaskType.HAUL:          999999,
+        TaskType.AERIAL_SURVEY: 999999,
     },
     PayloadType.DRILL: {
-        TaskType.EXPLORE: 20,  # Heavy, slow
-        TaskType.SPECTRAL: 999999,
-        TaskType.SAMPLE: -25,  # Perfect
-        TaskType.DELIVER: 30,
-        TaskType.SURVEY: 999999,
+        TaskType.EXPLORE:       20,     # Heavy, slow
+        TaskType.SPECTRAL:      999999,
+        TaskType.SAMPLE:        -25,    # Perfect — sample is core-drill class
+        TaskType.DELIVER:       30,
+        TaskType.SURVEY:        999999,
+        TaskType.BAROMETRIC:    999999,
+        TaskType.EXCAVATE:      10,     # Drill can excavate, slow & narrow
+        TaskType.HAUL:          999999,
+        TaskType.AERIAL_SURVEY: 999999,
     },
     PayloadType.CARGO: {
-        TaskType.EXPLORE: 30,  # Too slow
-        TaskType.SPECTRAL: 999999,
-        TaskType.SAMPLE: 999999,
-        TaskType.DELIVER: -20,  # Cargo champ
-        TaskType.SURVEY: 999999,
+        TaskType.EXPLORE:       30,     # Too slow
+        TaskType.SPECTRAL:      999999,
+        TaskType.SAMPLE:        999999,
+        TaskType.DELIVER:       -20,    # Cargo champ
+        TaskType.SURVEY:        999999,
+        TaskType.BAROMETRIC:    999999,
+        TaskType.EXCAVATE:      999999,
+        TaskType.HAUL:          0,      # Has cargo capacity but lighter than HAULER
+        TaskType.AERIAL_SURVEY: 999999,
     },
     PayloadType.CAMERA: {
-        TaskType.EXPLORE: 5,  # Decent
-        TaskType.SPECTRAL: 999999,
-        TaskType.SAMPLE: 999999,
-        TaskType.DELIVER: 50,
-        TaskType.SURVEY: -25,  # Perfect
+        TaskType.EXPLORE:       5,      # Decent
+        TaskType.SPECTRAL:      999999,
+        TaskType.SAMPLE:        999999,
+        TaskType.DELIVER:       50,
+        TaskType.SURVEY:        -25,    # Perfect for ground-level visual survey
+        TaskType.BAROMETRIC:    999999,
+        TaskType.EXCAVATE:      999999,
+        TaskType.HAUL:          999999,
+        TaskType.AERIAL_SURVEY: 10,     # Camera but not aerial
+    },
+    PayloadType.BAROMETER: {
+        TaskType.EXPLORE:       30,     # No LiDAR — dead-reckoning only
+        TaskType.SPECTRAL:      999999,
+        TaskType.SAMPLE:        999999,
+        TaskType.DELIVER:       50,
+        TaskType.SURVEY:        999999,
+        TaskType.BAROMETRIC:    -25,    # Born for this — opaque pressure-profile data
+        TaskType.EXCAVATE:      999999,
+        TaskType.HAUL:          999999,
+        TaskType.AERIAL_SURVEY: 999999,
+    },
+    PayloadType.EXCAVATOR: {
+        TaskType.EXPLORE:       40,     # Very heavy, very slow
+        TaskType.SPECTRAL:      999999,
+        TaskType.SAMPLE:        -10,    # Sampling is a sibling capability
+        TaskType.DELIVER:       40,
+        TaskType.SURVEY:        999999,
+        TaskType.BAROMETRIC:    999999,
+        TaskType.EXCAVATE:      -25,    # Born for this — bulk regolith displacement
+        TaskType.HAUL:          20,     # Can move dirt but not built for hauling
+        TaskType.AERIAL_SURVEY: 999999,
+    },
+    PayloadType.HAULER: {
+        TaskType.EXPLORE:       50,     # Heavy treads, slow
+        TaskType.SPECTRAL:      999999,
+        TaskType.SAMPLE:        999999,
+        TaskType.DELIVER:       -15,    # Good but cargo-class beats it on small loads
+        TaskType.SURVEY:        999999,
+        TaskType.BAROMETRIC:    999999,
+        TaskType.EXCAVATE:      999999, # No bucket
+        TaskType.HAUL:          -25,    # Born for this — heavy cargo specialist
+        TaskType.AERIAL_SURVEY: 999999,
+    },
+    PayloadType.OPTICAL_DRONE: {
+        TaskType.EXPLORE:       0,      # Aerial vantage gives wide coverage
+        TaskType.SPECTRAL:      999999,
+        TaskType.SAMPLE:        999999,
+        TaskType.DELIVER:       999999, # Tiny payload mass
+        TaskType.SURVEY:        -10,    # Aerial visual is good
+        TaskType.BAROMETRIC:    999999,
+        TaskType.EXCAVATE:      999999,
+        TaskType.HAUL:          999999,
+        TaskType.AERIAL_SURVEY: -25,    # Born for this — aerial 4-DOF optics
     },
 }
 

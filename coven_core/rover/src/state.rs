@@ -692,10 +692,20 @@ impl RoverStateMachine {
                 };
                 self.dock.send(ack).await?;
 
-                // Set up navigation waypoints
-                let wp_coords: Vec<(f64, f64)> = waypoints.iter().map(|w| (w.x, w.y)).collect();
-                self.navigator.set_waypoints(wp_coords.clone());
-                // Add dock as final destination (return home)
+                // Set up navigation waypoints. Honor each waypoint's
+                // declared tolerance (Waypoint::tolerance) by passing it
+                // through to the navigator instead of dropping it. Without
+                // this, the rover converges to the navigator's tighter
+                // default tolerance (typically 0.10 m) and can limit-cycle
+                // when the waypoint actually wanted 0.30 m of slack.
+                let wp_coords: Vec<(f64, f64)> =
+                    waypoints.iter().map(|w| (w.x, w.y)).collect();
+                let wp_with_tol: Vec<(f64, f64, f64)> = waypoints
+                    .iter()
+                    .map(|w| (w.x, w.y, w.tolerance))
+                    .collect();
+                self.navigator.set_waypoints_with_tolerances(wp_with_tol);
+                // Add dock as final destination (return home, default tolerance).
                 self.navigator.set_dock_position(dock_x, dock_y);
 
                 // Calculate total path distance for timeout estimation

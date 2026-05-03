@@ -1,0 +1,394 @@
+<?xml version="1.0"?>
+<!--
+COVEN 2-Rover Test World
+15m x 15m arena with static obstacles for SLAM testing.
+- Nothing within 3m of origin (rover maneuvering space)
+- Nothing within 1m of outer walls
+- Obstacles spaced at least 1m apart
+
+Dock and rovers are spawned dynamically by coven_2rover_sim.launch.py
+-->
+<sdf version="1.9">
+  <world name="coven_world">
+
+    <!-- Physics -->
+    <physics name="1ms" type="ignored">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+    </physics>
+
+    <!-- Plugins -->
+    <plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics"/>
+    <plugin filename="gz-sim-user-commands-system" name="gz::sim::systems::UserCommands"/>
+    <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster"/>
+    <plugin filename="gz-sim-sensors-system" name="gz::sim::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+    <plugin filename="gz-sim-imu-system" name="gz::sim::systems::Imu"/>
+    <plugin filename="gz-sim-contact-system" name="gz::sim::systems::Contact"/>
+
+    <!-- Lighting -->
+    <light type="directional" name="sun">
+      <cast_shadows>true</cast_shadows>
+      <pose>0 0 50 0 0 0</pose>
+      <diffuse>0.8 0.8 0.8 1</diffuse>
+      <specular>0.2 0.2 0.2 1</specular>
+      <direction>-0.5 0.1 -0.9</direction>
+    </light>
+
+    <!-- Ground Plane (15m x 15m) -->
+    <model name="ground_plane">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>15 15</size>
+            </plane>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>15 15</size>
+            </plane>
+          </geometry>
+          <material>
+            <ambient>0.4 0.4 0.4 1</ambient>
+            <diffuse>0.5 0.5 0.5 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- =================================================================== -->
+    <!-- PERIMETER WALLS (15m x 15m arena) -->
+    <!-- =================================================================== -->
+
+    <model name="wall_north">
+      <static>true</static>
+      <pose>0 7.5 0.5 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>15 0.2 1</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>15 0.2 1</size></box></geometry>
+          <material>
+            <ambient>0.5 0.5 0.5 1</ambient>
+            <diffuse>0.6 0.6 0.6 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="wall_south">
+      <static>true</static>
+      <pose>0 -7.5 0.5 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>15 0.2 1</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>15 0.2 1</size></box></geometry>
+          <material>
+            <ambient>0.5 0.5 0.5 1</ambient>
+            <diffuse>0.6 0.6 0.6 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="wall_east">
+      <static>true</static>
+      <pose>7.5 0 0.5 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.2 15 1</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.2 15 1</size></box></geometry>
+          <material>
+            <ambient>0.5 0.5 0.5 1</ambient>
+            <diffuse>0.6 0.6 0.6 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="wall_west">
+      <static>true</static>
+      <pose>-7.5 0 0.5 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.2 15 1</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.2 15 1</size></box></geometry>
+          <material>
+            <ambient>0.5 0.5 0.5 1</ambient>
+            <diffuse>0.6 0.6 0.6 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- =================================================================== -->
+    <!-- STATIC OBSTACLES -->
+    <!-- - Nothing within 3m of origin -->
+    <!-- - Nothing within 1m of walls (walls at ±7.5, so obstacles max ±6.5) -->
+    <!-- - At least 1m between obstacles -->
+    <!-- =================================================================== -->
+
+    <!-- Large box in NE quadrant -->
+    <model name="box_ne">
+      <static>true</static>
+      <pose>5.0 5.0 0.5 0 0 0.3</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>1.0 1.0 1.0</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>1.0 1.0 1.0</size></box></geometry>
+          <material>
+            <ambient>0.6 0.3 0.2 1</ambient>
+            <diffuse>0.7 0.4 0.3 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Cylinder in NW quadrant -->
+    <model name="cylinder_nw">
+      <static>true</static>
+      <pose>-5.0 5.0 0.5 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><cylinder><radius>0.5</radius><length>1.0</length></cylinder></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><cylinder><radius>0.5</radius><length>1.0</length></cylinder></geometry>
+          <material>
+            <ambient>0.2 0.4 0.6 1</ambient>
+            <diffuse>0.3 0.5 0.7 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- L-shaped wall in SE quadrant -->
+    <model name="l_wall_se_horiz">
+      <static>true</static>
+      <pose>5.0 -4.5 0.4 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>2.0 0.2 0.8</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>2.0 0.2 0.8</size></box></geometry>
+          <material>
+            <ambient>0.4 0.4 0.5 1</ambient>
+            <diffuse>0.5 0.5 0.6 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+    <model name="l_wall_se_vert">
+      <static>true</static>
+      <pose>5.9 -5.4 0.4 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.2 1.6 0.8</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.2 1.6 0.8</size></box></geometry>
+          <material>
+            <ambient>0.4 0.4 0.5 1</ambient>
+            <diffuse>0.5 0.5 0.6 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Barrel cluster in SW quadrant -->
+    <model name="barrel_1">
+      <static>true</static>
+      <pose>-5.5 -4.5 0.4 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><cylinder><radius>0.3</radius><length>0.8</length></cylinder></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><cylinder><radius>0.3</radius><length>0.8</length></cylinder></geometry>
+          <material>
+            <ambient>0.5 0.4 0.2 1</ambient>
+            <diffuse>0.6 0.5 0.3 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+    <model name="barrel_2">
+      <static>true</static>
+      <pose>-4.8 -5.0 0.4 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><cylinder><radius>0.3</radius><length>0.8</length></cylinder></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><cylinder><radius>0.3</radius><length>0.8</length></cylinder></geometry>
+          <material>
+            <ambient>0.5 0.4 0.2 1</ambient>
+            <diffuse>0.6 0.5 0.3 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+    <model name="barrel_3">
+      <static>true</static>
+      <pose>-5.2 -5.6 0.4 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><cylinder><radius>0.3</radius><length>0.8</length></cylinder></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><cylinder><radius>0.3</radius><length>0.8</length></cylinder></geometry>
+          <material>
+            <ambient>0.5 0.4 0.2 1</ambient>
+            <diffuse>0.6 0.5 0.3 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+    <model name="barrel_4">
+      <static>true</static>
+      <pose>-4.5 -5.8 0.4 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><cylinder><radius>0.3</radius><length>0.8</length></cylinder></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><cylinder><radius>0.3</radius><length>0.8</length></cylinder></geometry>
+          <material>
+            <ambient>0.5 0.4 0.2 1</ambient>
+            <diffuse>0.6 0.5 0.3 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Interior wall segment - east side -->
+    <model name="wall_interior_east">
+      <static>true</static>
+      <pose>5.5 0 0.4 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.2 2.5 0.8</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.2 2.5 0.8</size></box></geometry>
+          <material>
+            <ambient>0.4 0.4 0.5 1</ambient>
+            <diffuse>0.5 0.5 0.6 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Interior wall segment - west side -->
+    <model name="wall_interior_west">
+      <static>true</static>
+      <pose>-5.5 0.5 0.4 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.2 2.0 0.8</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.2 2.0 0.8</size></box></geometry>
+          <material>
+            <ambient>0.4 0.4 0.5 1</ambient>
+            <diffuse>0.5 0.5 0.6 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Large crate along north side -->
+    <model name="crate_north">
+      <static>true</static>
+      <pose>0 5.5 0.6 0 0 0.1</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>1.5 0.8 1.2</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>1.5 0.8 1.2</size></box></geometry>
+          <material>
+            <ambient>0.3 0.5 0.3 1</ambient>
+            <diffuse>0.4 0.6 0.4 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Small box along south side -->
+    <model name="box_south">
+      <static>true</static>
+      <pose>-2.0 -5.5 0.35 0 0 0.5</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.7 0.7 0.7</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.7 0.7 0.7</size></box></geometry>
+          <material>
+            <ambient>0.6 0.4 0.5 1</ambient>
+            <diffuse>0.7 0.5 0.6 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Large cylinder east of center -->
+    <model name="pillar_east">
+      <static>true</static>
+      <pose>4.0 -1.5 0.5 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><cylinder><radius>0.4</radius><length>1.0</length></cylinder></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><cylinder><radius>0.4</radius><length>1.0</length></cylinder></geometry>
+          <material>
+            <ambient>0.5 0.5 0.5 1</ambient>
+            <diffuse>0.6 0.6 0.6 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Box west of center -->
+    <model name="box_west">
+      <static>true</static>
+      <pose>-4.0 1.5 0.4 0 0 0.2</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.8 0.8 0.8</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.8 0.8 0.8</size></box></geometry>
+          <material>
+            <ambient>0.4 0.3 0.5 1</ambient>
+            <diffuse>0.5 0.4 0.6 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- =================================================================== -->
+    <!-- DOCK AND ROVERS spawned dynamically by launch file -->
+    <!-- =================================================================== -->
+
+  </world>
+</sdf>

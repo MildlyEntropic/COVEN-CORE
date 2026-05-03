@@ -2,10 +2,14 @@
 # COVEN-CORE Docker Runner Script
 # Usage: ./run.sh [command]
 # Examples:
-#   ./run.sh              - Start interactive shell
-#   ./run.sh build        - Build the workspace
-#   ./run.sh dock         - Launch dock hardware nodes
-#   ./run.sh test         - Run tests
+#   ./run.sh                 - Start interactive shell
+#   ./run.sh build           - Build the workspace
+#   ./run.sh dock            - Launch dock hardware nodes (real Pi rovers)
+#   ./run.sh sim             - Launch single-rover Gazebo sim + dock
+#   ./run.sh sim-headless    - Same, no Gazebo GUI
+#   ./run.sh test            - Run tests
+#   ./run.sh py-test         - Run Python unit tests (frame codec, dispatch,
+#                              swarm, rover codec) without launching ROS2
 
 set -e
 
@@ -43,12 +47,45 @@ case "${1:-shell}" in
         ;;
 
     dock)
-        echo -e "${GREEN}Launching COVEN dock...${NC}"
+        echo -e "${GREEN}Launching COVEN dock (expects real Pi rovers on USB)...${NC}"
         docker compose run --rm coven bash -c "
             source /opt/ros/jazzy/setup.bash && \
             source /ros2_ws/install/setup.bash 2>/dev/null || true && \
             cd /ros2_ws && \
             ros2 launch coven_core coven_dock_hardware.launch.py
+        "
+        ;;
+
+    sim)
+        echo -e "${GREEN}Launching COVEN sim: Gazebo + 1 rover proxy + dock...${NC}"
+        echo -e "${YELLOW}Gazebo GUI requires X forwarding. Use 'sim-headless' if it fails.${NC}"
+        docker compose run --rm coven bash -c "
+            source /opt/ros/jazzy/setup.bash && \
+            source /ros2_ws/install/setup.bash 2>/dev/null || true && \
+            cd /ros2_ws && \
+            ros2 launch coven_core coven_sim_proxy_1rover.launch.py
+        "
+        ;;
+
+    sim-headless)
+        echo -e "${GREEN}Launching COVEN sim (headless)...${NC}"
+        docker compose run --rm coven bash -c "
+            source /opt/ros/jazzy/setup.bash && \
+            source /ros2_ws/install/setup.bash 2>/dev/null || true && \
+            cd /ros2_ws && \
+            ros2 launch coven_core coven_sim_proxy_1rover.launch.py headless:=true
+        "
+        ;;
+
+    py-test)
+        echo -e "${GREEN}Running Python unit tests (no ROS2 runtime needed)...${NC}"
+        docker compose run --rm coven bash -c "
+            cd /ros2_ws/src/COVEN-CORE/coven_core && \
+            python3 -m unittest \
+                test.test_frame_codec \
+                test.test_capability_dispatch \
+                test.test_polymorphism_swarm \
+                test.test_rover_codec
         "
         ;;
 

@@ -28,6 +28,20 @@ case "$MODE" in
         ros2 topic echo /coven/mission_request &
         wait
         ;;
+    sim)
+        echo "=== COVEN Simulation Bridge ==="
+        echo ""
+        echo "Sim-specific monitoring: dock-side handshake events plus the"
+        echo "Gazebo-bridged rover topics the sim_rover_proxy is reading."
+        echo ""
+        echo "Press Ctrl+C to stop."
+        ros2 topic echo /coven/bridge_events &
+        ros2 topic echo /coven/rover_status &
+        # If you launched the sim with rover_name=witch_morgan, these will exist:
+        ros2 topic hz /witch_morgan/scan 2>/dev/null &
+        ros2 topic hz /witch_morgan/odometry 2>/dev/null &
+        wait
+        ;;
     all|*)
         echo "=== COVEN Dock Topics ==="
         echo ""
@@ -44,6 +58,8 @@ case "$MODE" in
         echo "  /coven/dispatcher_status   - Exploration progress"
         echo "  /coven/mission_request     - Mission assignments"
         echo "  /coven/auctioneer_status   - Auction state"
+        echo ""
+        echo "Modes: bridge | slam | dispatch | sim | all"
         echo ""
         echo "Monitoring bridge events (press Ctrl+C to stop)..."
         ros2 topic echo /coven/bridge_events

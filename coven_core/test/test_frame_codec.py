@@ -452,7 +452,10 @@ class TestBatchChunkAssembler(unittest.TestCase):
         """Build a minimal BATCH_HEADER chunk payload."""
         data = bytearray()
         data.extend(struct.pack('<I', batch_id))
-        data.extend(struct.pack('<H', total_samples))
+        # total_samples is u32 (4 bytes) per the Rust firmware encoder; the
+        # decoder in coven_core/frame_codec.py reads '<I'. Earlier versions
+        # of this helper used '<H' which masked a width mismatch — fixed.
+        data.extend(struct.pack('<I', total_samples))
         data.extend(struct.pack('<H', total_chunks))
         mid = module_id.encode('utf-8')
         data.append(len(mid))

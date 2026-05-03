@@ -26,6 +26,15 @@ setup(
          glob('launch/*.launch.py')),
         (os.path.join('share', package_name, 'config'),
          glob('config/*.yaml')),
+        # Simulation assets: Gazebo SDF worlds, models, and the recovered
+        # December launch files. Installed under share/<pkg>/sim/* so the
+        # sim launch files can resolve them via get_package_share_directory.
+        (os.path.join('share', package_name, 'sim', 'worlds'),
+         glob('sim/worlds/*.sdf')),
+        (os.path.join('share', package_name, 'sim', 'models'),
+         glob('sim/models/*.sdf')),
+        (os.path.join('share', package_name, 'sim', 'models', 'coven_rover'),
+         glob('sim/models/coven_rover/*.sdf')),
     ],
     install_requires=['setuptools', 'numpy', 'pyserial'],
     zip_safe=True,
@@ -37,12 +46,28 @@ setup(
 
     entry_points={
         'console_scripts': [
+            # === Production dock-side nodes (run continuously) ===
             # UART bridge: Rust rover <-> ROS2 ecosystem
             'rover_bridge = coven_core.rover_bridge:main',
             # Offline SLAM: processes recorded sensor batches
             'offline_slam_processor = coven_core.offline_slam_processor:main',
             # Frontier dispatcher: sends rovers to explore
             'frontier_dispatcher = coven_core.frontier_dispatcher:main',
+
+            # === Simulation infrastructure ===
+            # Simulation rover proxy: bridges a Gazebo-simulated rover into
+            # the COVEN protocol over a virtual UART (PTY pair) so the dock
+            # can talk to it as if it were a Rust-firmware Pi Zero rover.
+            'sim_rover_proxy = coven_core.sim_rover_proxy:main',
+
+            # === Operator CLIs (one-shot tools) ===
+            # Manually issue a mission to the dock auctioneer; useful for
+            # demos, smoke tests, and triggering tasks during sim runs.
+            'coven-dispatch-task = coven_core.dispatch_task_cli:main',
+            # Open a serial port (or PTY symlink), send SYSTEM_PING, await
+            # response. Verifies the COVEN link is alive without launching
+            # the full ROS2 stack.
+            'coven-ping = coven_core.ping_cli:main',
         ],
     },
 )
